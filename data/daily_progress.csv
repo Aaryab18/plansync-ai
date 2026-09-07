@@ -1,0 +1,21 @@
+reportId,progressDescription,date,discipline
+RPT-001,Foundation pit excavation completed in Zone A,2026-09-03,Civil
+RPT-002,Rebar fixing completed for the Zone A foundation,2026-09-06,Civil
+RPT-003,Concrete poured for foundation at Zone A,2026-09-08,Civil
+RPT-004,Column bars fixed for Block B,2026-09-12,Civil
+RPT-005,Shuttering completed for Block B columns,2026-09-15,Civil
+RPT-006,Spool erection for Line 24 completed,2026-09-07,Piping
+RPT-007,Line 24 spool welding completed,2026-09-10,Piping
+RPT-008,Pipe supports installed on Line 24,2026-09-09,Piping
+RPT-009,Hydro test completed for Line 24,2026-09-12,Piping
+RPT-010,Insulation work started on Line 24,2026-09-14,Piping
+RPT-011,Line 25 supports and erection progressing,2026-09-12,Piping
+RPT-012,Welding of Line 25 spools completed,2026-09-15,Piping
+RPT-013,Cable tray work finished in Area A,2026-09-08,Electrical
+RPT-014,Power cables pulled in Area A,2026-09-11,Electrical
+RPT-015,Panel A cable termination completed,2026-09-14,Electrical
+RPT-016,Electrical panel installed in Room B,2026-09-12,Electrical
+RPT-017,Panel wiring and testing completed in Room B,2026-09-16,Electrical
+RPT-018,Lighting fixtures being installed in Building C,2026-09-19,Electrical
+RPT-019,Earthing completed around Area A,2026-09-09,Electrical
+RPT-020,Substation transformer installation completed,2026-09-16,Electrical
