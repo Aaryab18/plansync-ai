@@ -3,66 +3,167 @@ import fs from "fs";
 import path from "path";
 import Papa from "papaparse";
 
-import { ScheduleActivity } from "@/types/schedule";
-import { matchProgressUpdate } from "@/lib/matcher";
+import {
+  ScheduleActivity,
+} from "@/types/schedule";
 
-export async function POST(request: Request) {
+import {
+  matchProgressUpdate,
+} from "@/lib/matcher";
+
+import {
+  extractExecutionEvent,
+} from "@/lib/extractor";
+
+export async function POST(
+  request: Request
+) {
   try {
-    const body = await request.json();
+
+    const body =
+      await request.json();
 
     const {
       progressDescription,
       discipline,
+      date = null,
     } = body;
 
-    if (!progressDescription || !discipline) {
+    /*
+     * Validate input.
+     */
+    if (
+      !progressDescription ||
+      !discipline
+    ) {
       return NextResponse.json(
         {
           error:
             "progressDescription and discipline are required",
         },
-        { status: 400 }
+        {
+          status: 400,
+        }
       );
     }
 
-    const filePath = path.join(
-      process.cwd(),
-      "data",
-      "schedule_activities.csv"
-    );
+    /*
+     * STEP 1
+     * Extract structured execution information.
+     */
+    const executionEvent =
+      extractExecutionEvent(
+        progressDescription,
+        discipline,
+        date
+      );
 
-    const csv = fs.readFileSync(filePath, "utf8");
+    /*
+     * STEP 2
+     * Load schedule CSV.
+     */
+    const filePath =
+      path.join(
+        process.cwd(),
+        "data",
+        "schedule_activities.csv"
+      );
 
+    if (
+      !fs.existsSync(filePath)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Schedule file not found.",
+        },
+        {
+          status: 500,
+        }
+      );
+    }
+
+    const csv =
+      fs.readFileSync(
+        filePath,
+        "utf8"
+      );
+
+    /*
+     * STEP 3
+     * Parse CSV.
+     */
     const parsed =
-      Papa.parse<ScheduleActivity>(csv, {
-        header: true,
-        skipEmptyLines: true,
-      });
+      Papa.parse<ScheduleActivity>(
+        csv,
+        {
+          header: true,
+          skipEmptyLines: true,
+        }
+      );
 
-    const activities = parsed.data;
+    if (
+      parsed.errors.length > 0
+    ) {
+      console.error(
+        "CSV parsing errors:",
+        parsed.errors
+      );
+    }
 
-    const matches = matchProgressUpdate(
-      progressDescription,
-      discipline,
-      activities
-    );
+    const activities =
+      parsed.data.filter(
+        (activity) =>
+          activity.activityId &&
+          activity.activityDescription &&
+          activity.discipline
+      );
 
+    /*
+     * STEP 4
+     * Run hybrid matching.
+     */
+    const matches =
+      matchProgressUpdate(
+        progressDescription,
+        discipline,
+        activities
+      );
+
+    /*
+     * STEP 5
+     * Return everything needed by
+     * the frontend.
+     */
     return NextResponse.json({
       success: true,
+
       update: {
         progressDescription,
         discipline,
+        date,
       },
+
+      executionEvent,
+
       matches,
     });
+
   } catch (error) {
-    console.error(error);
+
+    console.error(
+      "MATCH API ERROR:",
+      error
+    );
 
     return NextResponse.json(
       {
-        error: "Failed to process progress update",
+        error:
+          "Failed to process progress update",
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }

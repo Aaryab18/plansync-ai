@@ -13,6 +13,16 @@ export interface ProgressUpdate {
   discipline: string;
 }
 
+export interface ExecutionEvent {
+  rawText: string;
+  action: string;
+  object: string;
+  identifiers: string[];
+  status: "STARTED" | "IN_PROGRESS" | "COMPLETED" | "UNKNOWN";
+  discipline: string;
+  date: string | null;
+}
+
 export type MatchStatus =
   | "AUTO_LINK"
   | "PLANNER_REVIEW"
@@ -24,4 +34,11 @@ export interface MatchResult {
   confidence: number;
   status: MatchStatus;
   reason: string;
+
+  breakdown?: {
+    identifier: number;
+    operation: number;
+    token: number;
+    fuzzy: number;
+  };
 }
