@@ -124,6 +124,18 @@ export default function Home() {
     useState("");
 
   /*
+   * IMPORTANT:
+   * Tracks whether the latest matching attempt
+   * completed successfully, even when matches = [].
+   *
+   * This allows the UI to display the
+   * UNMATCHED card instead of showing nothing.
+   */
+
+  const [matchCompleted, setMatchCompleted] =
+    useState(false);
+
+  /*
    * --------------------------------------------------
    * BATCH UPLOAD STATE
    * --------------------------------------------------
@@ -211,16 +223,23 @@ export default function Home() {
     try {
       setMatching(true);
       setActionMessage("");
+
+      // Clear previous result.
       setMatches([]);
       setSelectedMatch(null);
+
+      // New matching attempt has not completed yet.
+      setMatchCompleted(false);
 
       const response =
         await fetch("/api/match", {
           method: "POST",
+
           headers: {
             "Content-Type":
               "application/json",
           },
+
           body: JSON.stringify({
             progressDescription,
             discipline,
@@ -238,9 +257,24 @@ export default function Home() {
         );
       }
 
+      /*
+       * The API may legitimately return
+       * an empty matches array.
+       *
+       * Example:
+       * Mechanical + unknown activity
+       *
+       * In that case we still want the UI
+       * to show UNMATCHED.
+       */
+
       setMatches(
         data.matches || []
       );
+
+      // Matching completed successfully.
+      setMatchCompleted(true);
+
     } catch (error) {
       console.error(error);
 
@@ -249,6 +283,10 @@ export default function Home() {
           ? error.message
           : "Failed to process report."
       );
+
+      // Do not show UNMATCHED for an API error.
+      setMatchCompleted(false);
+
     } finally {
       setMatching(false);
     }
@@ -270,24 +308,35 @@ export default function Home() {
       const response =
         await fetch("/api/update", {
           method: "POST",
+
           headers: {
             "Content-Type":
               "application/json",
           },
+
           body: JSON.stringify({
             reportId,
+
             activityId:
               result.activity.activityId,
-            actualStart: actualDate,
+
+            actualStart:
+              actualDate,
+
             actualEnd:
               status === "COMPLETED"
                 ? actualDate
                 : null,
+
             status,
+
             action,
+
             confidence:
               result.confidence,
-            reason: result.reason,
+
+            reason:
+              result.reason,
           }),
         });
 
@@ -313,6 +362,7 @@ export default function Home() {
       setScheduleSearch(
         result.activity.activityId
       );
+
     } catch (error) {
       console.error(error);
 
@@ -404,6 +454,7 @@ export default function Home() {
           data.summary?.totalReports || 0
         } progress reports.`
       );
+
     } catch (error) {
       console.error(error);
 
@@ -412,6 +463,7 @@ export default function Home() {
           ? error.message
           : "Failed to process CSV."
       );
+
     } finally {
       setBatchLoading(false);
     }
@@ -434,10 +486,12 @@ export default function Home() {
       const response =
         await fetch("/api/update", {
           method: "POST",
+
           headers: {
             "Content-Type":
               "application/json",
           },
+
           body: JSON.stringify({
             reportId:
               result.report.reportId,
@@ -486,10 +540,12 @@ export default function Home() {
               result.report.reportId
                 ? {
                     ...item,
+
                     bestMatch:
                       item.bestMatch
                         ? {
                             ...item.bestMatch,
+
                             status:
                               "AUTO_LINK",
                           }
@@ -504,6 +560,7 @@ export default function Home() {
       );
 
       await loadDashboard();
+
     } catch (error) {
       console.error(error);
 
@@ -1253,8 +1310,8 @@ export default function Home() {
             </div>
           )}
         </section>
-        
-                {/* --------------------------------------------------
+
+        {/* --------------------------------------------------
             AI LINKING ANALYTICS
         -------------------------------------------------- */}
 
@@ -2136,9 +2193,11 @@ export default function Home() {
             </div>
           )}
 
-          {/* MATCH RESULTS */}
+          {/* --------------------------------------------------
+              MATCH RESULTS
+          -------------------------------------------------- */}
 
-          {matches.length > 0 && (
+          {matchCompleted && (
             <div
               style={{
                 marginTop: "24px",
@@ -2158,250 +2217,521 @@ export default function Home() {
                   gap: "12px",
                 }}
               >
-                {matches.map(
-                  (result, index) => (
+                {matches.length === 0 ? (
+                  /* --------------------------------------------------
+                     NO MATCH / UNMATCHED CARD
+                  -------------------------------------------------- */
+
+                  <div
+                    style={{
+                      border:
+                        "2px solid #ef4444",
+                      borderRadius: "10px",
+                      padding: "20px",
+                      background:
+                        "#fef2f2",
+                    }}
+                  >
                     <div
-                      key={
-                        result.activity
-                          .activityId
-                      }
                       style={{
-                        border:
-                          index === 0
-                            ? "2px solid #2563eb"
-                            : "1px solid #e5e7eb",
-                        borderRadius:
-                          "10px",
-                        padding: "16px",
+                        display: "flex",
+                        justifyContent:
+                          "space-between",
+                        alignItems:
+                          "center",
+                        gap: "20px",
+                        flexWrap:
+                          "wrap",
                       }}
                     >
                       <div
                         style={{
-                          display:
-                            "flex",
-                          justifyContent:
-                            "space-between",
-                          gap: "12px",
-                          flexWrap:
-                            "wrap",
+                          flex: 1,
+                          minWidth:
+                            "280px",
                         }}
                       >
-                        <div>
-                          <div
-                            style={{
-                              display:
-                                "flex",
-                              gap: "8px",
-                              alignItems:
-                                "center",
-                              marginBottom:
-                                "6px",
-                            }}
-                          >
-                            <strong>
-                              {
-                                result
-                                  .activity
-                                  .activityId
-                              }
-                            </strong>
-
-                            <StatusBadge
-                              status={
-                                result.status
-                              }
-                            />
-                          </div>
-
-                          <div>
-                            {
-                              result
-                                .activity
-                                .activityDescription
-                            }
-                          </div>
-
-                          <div
-                            style={{
-                              marginTop:
-                                "8px",
-                              fontSize:
-                                "13px",
-                              color:
-                                "#6b7280",
-                            }}
-                          >
-                            {
-                              result.reason
-                            }
-                          </div>
-                        </div>
-
-                        <div
-                          style={{
-                            textAlign:
-                              "right",
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize:
-                                "24px",
-                              fontWeight:
-                                800,
-                            }}
-                          >
-                            {Math.round(
-                              result.confidence
-                            )}
-                            %
-                          </div>
-
-                          <div
-                            style={{
-                              fontSize:
-                                "12px",
-                              color:
-                                "#6b7280",
-                            }}
-                          >
-                            Confidence
-                          </div>
-                        </div>
-                      </div>
-
-                      {result.breakdown && (
                         <div
                           style={{
                             display:
                               "flex",
+                            alignItems:
+                              "center",
                             gap: "10px",
+                            marginBottom:
+                              "8px",
+                            flexWrap:
+                              "wrap",
+                          }}
+                        >
+                          <strong
+                            style={{
+                              fontSize:
+                                "18px",
+                              color:
+                                "#991b1b",
+                            }}
+                          >
+                            UNMATCHED
+                          </strong>
+
+                          <span
+                            style={{
+                              padding:
+                                "5px 9px",
+                              borderRadius:
+                                "999px",
+                              background:
+                                "#fee2e2",
+                              color:
+                                "#991b1b",
+                              fontSize:
+                                "12px",
+                              fontWeight:
+                                800,
+                            }}
+                          >
+                            NO CONFIDENT MATCH
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            color:
+                              "#374151",
+                            lineHeight:
+                              1.5,
+                          }}
+                        >
+                          No suitable
+                          schedule
+                          activity was
+                          found for
+                          this execution
+                          update.
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop:
+                              "10px",
+                            fontSize:
+                              "13px",
+                            color:
+                              "#6b7280",
+                            lineHeight:
+                              1.5,
+                          }}
+                        >
+                          The update may
+                          represent a
+                          new or
+                          unplanned
+                          activity.
+                          Planner review
+                          is recommended
+                          instead of
+                          forcing an
+                          incorrect
+                          schedule link.
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          textAlign:
+                            "right",
+                          minWidth:
+                            "90px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize:
+                              "30px",
+                            fontWeight:
+                              800,
+                            color:
+                              "#991b1b",
+                          }}
+                        >
+                          0%
+                        </div>
+
+                        <div
+                          style={{
+                            fontSize:
+                              "12px",
+                            color:
+                              "#6b7280",
+                          }}
+                        >
+                          Confidence
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                ) : (
+
+                  /* --------------------------------------------------
+                     MATCH RESULTS
+                  -------------------------------------------------- */
+
+                  matches.map(
+                    (
+                      result,
+                      index
+                    ) => (
+                      <div
+                        key={
+                          result
+                            .activity
+                            .activityId
+                        }
+                        style={{
+                          border:
+                            index === 0
+                              ? "2px solid #2563eb"
+                              : "1px solid #e5e7eb",
+                          borderRadius:
+                            "10px",
+                          padding:
+                            "16px",
+                          background:
+                            index === 0
+                              ? "#ffffff"
+                              : "#fafafa",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display:
+                              "flex",
+                            justifyContent:
+                              "space-between",
+                            gap: "12px",
+                            flexWrap:
+                              "wrap",
+                          }}
+                        >
+                          {/* MATCH INFORMATION */}
+
+                          <div
+                            style={{
+                              flex: 1,
+                              minWidth:
+                                "280px",
+                            }}
+                          >
+                            <div
+                              style={{
+                                display:
+                                  "flex",
+                                gap: "8px",
+                                alignItems:
+                                  "center",
+                                marginBottom:
+                                  "6px",
+                                flexWrap:
+                                  "wrap",
+                              }}
+                            >
+                              <strong
+                                style={{
+                                  fontSize:
+                                    "17px",
+                                }}
+                              >
+                                {
+                                  result
+                                    .activity
+                                    .activityId
+                                }
+                              </strong>
+
+                              <StatusBadge
+                                status={
+                                  result.status
+                                }
+                              />
+
+                              {index ===
+                                0 && (
+                                <span
+                                  style={{
+                                    padding:
+                                      "5px 8px",
+                                    borderRadius:
+                                      "999px",
+                                    background:
+                                      "#dbeafe",
+                                    color:
+                                      "#1d4ed8",
+                                    fontSize:
+                                      "11px",
+                                    fontWeight:
+                                      800,
+                                  }}
+                                >
+                                  TOP MATCH
+                                </span>
+                              )}
+                            </div>
+
+                            <div
+                              style={{
+                                fontSize:
+                                  "15px",
+                                fontWeight:
+                                  600,
+                              }}
+                            >
+                              {
+                                result
+                                  .activity
+                                  .activityDescription
+                              }
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop:
+                                  "8px",
+                                fontSize:
+                                  "13px",
+                                color:
+                                  "#6b7280",
+                              }}
+                            >
+                              {
+                                result.reason
+                              }
+                            </div>
+                          </div>
+
+                          {/* CONFIDENCE */}
+
+                          <div
+                            style={{
+                              textAlign:
+                                "right",
+                              minWidth:
+                                "100px",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize:
+                                  "28px",
+                                fontWeight:
+                                  800,
+                                color:
+                                  result.confidence >=
+                                  80
+                                    ? "#166534"
+                                    : result.confidence >=
+                                      45
+                                    ? "#92400e"
+                                    : "#991b1b",
+                              }}
+                            >
+                              {Math.round(
+                                result.confidence
+                              )}
+                              %
+                            </div>
+
+                            <div
+                              style={{
+                                fontSize:
+                                  "12px",
+                                color:
+                                  "#6b7280",
+                              }}
+                            >
+                              Confidence
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* MATCHING BREAKDOWN */}
+
+                        {result.breakdown && (
+                          <div
+                            style={{
+                              display:
+                                "flex",
+                              gap: "10px",
+                              flexWrap:
+                                "wrap",
+                              marginTop:
+                                "12px",
+                              fontSize:
+                                "12px",
+                            }}
+                          >
+                            <ScorePill
+                              label="Identifier"
+                              value={
+                                result
+                                  .breakdown
+                                  .identifier
+                              }
+                            />
+
+                            <ScorePill
+                              label="Operation"
+                              value={
+                                result
+                                  .breakdown
+                                  .operation
+                              }
+                            />
+
+                            <ScorePill
+                              label="Token"
+                              value={
+                                result
+                                  .breakdown
+                                  .token
+                              }
+                            />
+
+                            <ScorePill
+                              label="Fuzzy"
+                              value={
+                                result
+                                  .breakdown
+                                  .fuzzy
+                              }
+                            />
+                          </div>
+                        )}
+
+                        {/* SCORE + DECISION */}
+
+                        <div
+                          style={{
+                            display:
+                              "flex",
+                            gap: "18px",
                             flexWrap:
                               "wrap",
                             marginTop:
                               "12px",
                             fontSize:
-                              "12px",
+                              "13px",
+                            color:
+                              "#374151",
                           }}
                         >
-                          <ScorePill
-                            label="Identifier"
-                            value={
-                              result
-                                .breakdown
-                                .identifier
-                            }
-                          />
+                          <span>
+                            <strong>
+                              Match Score:
+                            </strong>{" "}
+                            {result.score.toFixed(
+                              1
+                            )}
+                          </span>
 
-                          <ScorePill
-                            label="Operation"
-                            value={
-                              result
-                                .breakdown
-                                .operation
-                            }
-                          />
-
-                          <ScorePill
-                            label="Token"
-                            value={
-                              result
-                                .breakdown
-                                .token
-                            }
-                          />
-
-                          <ScorePill
-                            label="Fuzzy"
-                            value={
-                              result
-                                .breakdown
-                                .fuzzy
-                            }
-                          />
+                          <span>
+                            <strong>
+                              Decision:
+                            </strong>{" "}
+                            {result.status.replace(
+                              "_",
+                              " "
+                            )}
+                          </span>
                         </div>
-                      )}
 
-                      {index === 0 &&
-                        result.status !==
-                          "UNMATCHED" && (
-                          <div
-                            style={{
-                              marginTop:
-                                "14px",
-                              display:
-                                "flex",
-                              gap: "8px",
-                              flexWrap:
-                                "wrap",
-                            }}
-                          >
-                            <button
-                              onClick={() =>
-                                handleScheduleAction(
-                                  "APPROVED",
-                                  result
-                                )
-                              }
+                        {/* APPROVE / REJECT */}
+
+                        {index ===
+                          0 &&
+                          result.status !==
+                            "UNMATCHED" && (
+                            <div
                               style={{
-                                border:
-                                  "none",
-                                borderRadius:
-                                  "8px",
-                                padding:
-                                  "9px 13px",
-                                background:
-                                  "#16a34a",
-                                color:
-                                  "white",
-                                fontWeight:
-                                  700,
-                                cursor:
-                                  "pointer",
+                                marginTop:
+                                  "14px",
+                                display:
+                                  "flex",
+                                gap: "8px",
+                                flexWrap:
+                                  "wrap",
                               }}
                             >
-                              Approve & Update
-                              Schedule
-                            </button>
+                              <button
+                                onClick={() =>
+                                  handleScheduleAction(
+                                    "APPROVED",
+                                    result
+                                  )
+                                }
+                                style={{
+                                  border:
+                                    "none",
+                                  borderRadius:
+                                    "8px",
+                                  padding:
+                                    "9px 13px",
+                                  background:
+                                    "#16a34a",
+                                  color:
+                                    "white",
+                                  fontWeight:
+                                    700,
+                                  cursor:
+                                    "pointer",
+                                }}
+                              >
+                                Approve &
+                                Update
+                                Schedule
+                              </button>
 
-                            <button
-                              onClick={() =>
-                                handleScheduleAction(
-                                  "REJECTED",
-                                  result
-                                )
-                              }
-                              style={{
-                                border:
-                                  "1px solid #d1d5db",
-                                borderRadius:
-                                  "8px",
-                                padding:
-                                  "9px 13px",
-                                background:
-                                  "white",
-                                color:
-                                  "#374151",
-                                fontWeight:
-                                  700,
-                                cursor:
-                                  "pointer",
-                              }}
-                            >
-                              Reject Match
-                            </button>
-                          </div>
-                        )}
-                    </div>
+                              <button
+                                onClick={() =>
+                                  handleScheduleAction(
+                                    "REJECTED",
+                                    result
+                                  )
+                                }
+                                style={{
+                                  border:
+                                    "1px solid #d1d5db",
+                                  borderRadius:
+                                    "8px",
+                                  padding:
+                                    "9px 13px",
+                                  background:
+                                    "white",
+                                  color:
+                                    "#374151",
+                                  fontWeight:
+                                    700,
+                                  cursor:
+                                    "pointer",
+                                }}
+                              >
+                                Reject Match
+                              </button>
+                            </div>
+                          )}
+                      </div>
+                    )
                   )
                 )}
               </div>
             </div>
           )}
+
         </section>
 
         {/* --------------------------------------------------
-            RECENT DECISIONS
+            RECENT SCHEDULE DECISIONS
         -------------------------------------------------- */}
 
         <section
@@ -2432,7 +2762,10 @@ export default function Home() {
               }}
             >
               {dashboard.recentUpdates.map(
-                (update, index) => (
+                (
+                  update,
+                  index
+                ) => (
                   <div
                     key={`${update.reportId}-${index}`}
                     style={{
@@ -2554,7 +2887,10 @@ export default function Home() {
               "Schedule Update",
               "Execution Audit Trail",
             ].map(
-              (step, index) => (
+              (
+                step,
+                index
+              ) => (
                 <div
                   key={step}
                   style={{
@@ -2865,14 +3201,17 @@ function ScorePill({
 
 const inputStyle = {
   width: "100%",
-  boxSizing: "border-box" as const,
+  boxSizing:
+    "border-box" as const,
   padding: "11px 12px",
-  border: "1px solid #d1d5db",
+  border:
+    "1px solid #d1d5db",
   borderRadius: "8px",
 };
 
 const tableHeaderStyle = {
-  textAlign: "left" as const,
+  textAlign:
+    "left" as const,
   padding: "12px",
   borderBottom:
     "1px solid #e5e7eb",
