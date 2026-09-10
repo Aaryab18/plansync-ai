@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { supabase } from "@/lib/supabase";
 
 type ScheduleUpdate = {
   reportId: string;
@@ -13,10 +12,6 @@ type ScheduleUpdate = {
   reason?: string;
   updatedAt: string;
 };
-
-/* ---------------------------------------------------------
-   POST /api/update
---------------------------------------------------------- */
 
 export async function POST(request: Request) {
   try {
@@ -33,145 +28,85 @@ export async function POST(request: Request) {
       reason = "",
     } = body;
 
-    /* -----------------------------------------------------
-       VALIDATION
-    ----------------------------------------------------- */
-
     if (!reportId || !activityId) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "reportId and activityId are required.",
+          error: "reportId and activityId are required.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    if (
-      action !== "APPROVED" &&
-      action !== "REJECTED"
-    ) {
+    if (action !== "APPROVED" && action !== "REJECTED") {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "action must be APPROVED or REJECTED.",
+          error: "action must be APPROVED or REJECTED.",
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    /* -----------------------------------------------------
-       UPDATE FILE
-    ----------------------------------------------------- */
-
-    const filePath = path.join(
-      process.cwd(),
-      "data",
-      "schedule_updates.json"
-    );
-
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(
-        filePath,
-        "[]",
-        "utf8"
-      );
-    }
-
-    /* -----------------------------------------------------
-       READ EXISTING UPDATES
-    ----------------------------------------------------- */
-
-    const fileContent =
-      fs.readFileSync(
-        filePath,
-        "utf8"
-      );
-
-    let updates: ScheduleUpdate[] = [];
-
-    try {
-      updates =
-        JSON.parse(fileContent);
-    } catch {
-      updates = [];
-    }
-
-    /* -----------------------------------------------------
-       CREATE NEW UPDATE
-    ----------------------------------------------------- */
-
-    const newUpdate: ScheduleUpdate = {
-      reportId,
-      activityId,
-      actualStart,
-      actualEnd,
-      status:
-        status || "UNKNOWN",
+    const newUpdate = {
+      report_id: reportId,
+      activity_id: activityId,
+      actual_start: actualStart,
+      actual_end: actualEnd,
+      status: status || "UNKNOWN",
       action,
-      confidence:
-        Number(confidence) || 0,
+      confidence: Number(confidence) || 0,
       reason,
-      updatedAt:
-        new Date().toISOString(),
     };
 
-    /* -----------------------------------------------------
-       STORE UPDATE
-    ----------------------------------------------------- */
+    const { data, error } = await supabase
+      .from("schedule_updates")
+      .insert(newUpdate)
+      .select()
+      .single();
 
-    updates.push(newUpdate);
+    if (error) {
+      console.error("SUPABASE UPDATE ERROR:", error);
 
-    fs.writeFileSync(
-      filePath,
-      JSON.stringify(
-        updates,
-        null,
-        2
-      ),
-      "utf8"
-    );
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Failed to save schedule update.",
+          details: error.message,
+        },
+        { status: 500 }
+      );
+    }
 
-    /* -----------------------------------------------------
-       RESPONSE
-    ----------------------------------------------------- */
+    const formattedUpdate: ScheduleUpdate = {
+      reportId: data.report_id,
+      activityId: data.activity_id,
+      actualStart: data.actual_start,
+      actualEnd: data.actual_end,
+      status: data.status,
+      action: data.action,
+      confidence: Number(data.confidence),
+      reason: data.reason || "",
+      updatedAt: data.updated_at,
+    };
 
     return NextResponse.json({
       success: true,
-
       message:
         action === "APPROVED"
           ? "Schedule activity updated successfully."
           : "Schedule update rejected and recorded.",
-
-      update: newUpdate,
-
-      totalUpdates:
-        updates.length,
+      update: formattedUpdate,
     });
-
   } catch (error) {
-
-    console.error(
-      "UPDATE API ERROR:",
-      error
-    );
+    console.error("UPDATE API ERROR:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error:
-          "Failed to save schedule update.",
+        error: "Failed to save schedule update.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }

@@ -9,6 +9,7 @@ import {
 } from "@/types/schedule";
 
 import { matchProgressUpdate } from "@/lib/matcher";
+import { supabase } from "@/lib/supabase";
 
 /* --------------------------------------------------
    TYPES
@@ -35,38 +36,37 @@ type ScheduleRow = ScheduleActivity & {
 };
 
 /* --------------------------------------------------
-   HELPER: READ JSON
+   HELPER: READ SUPABASE UPDATES
 -------------------------------------------------- */
 
-function readScheduleUpdates(): ScheduleUpdate[] {
-  const filePath = path.join(
-    process.cwd(),
-    "data",
-    "schedule_updates.json"
-  );
+async function readScheduleUpdates(): Promise<ScheduleUpdate[]> {
+  const { data, error } = await supabase
+    .from("schedule_updates")
+    .select("*")
+    .order("updated_at", { ascending: true });
 
-  if (!fs.existsSync(filePath)) {
-    return [];
-  }
-
-  try {
-    const content = fs.readFileSync(filePath, "utf8");
-
-    const parsed = JSON.parse(content);
-
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-
-    return [];
-  } catch (error) {
+  if (error) {
     console.error(
-      "Failed to read schedule_updates.json:",
+      "Failed to read schedule_updates from Supabase:",
       error
     );
 
-    return [];
+    throw new Error(
+      "Failed to read schedule updates from Supabase."
+    );
   }
+
+  return (data || []).map((row) => ({
+    reportId: row.report_id,
+    activityId: row.activity_id,
+    actualStart: row.actual_start,
+    actualEnd: row.actual_end,
+    status: row.status,
+    action: row.action,
+    confidence: Number(row.confidence),
+    reason: row.reason || "",
+    updatedAt: row.updated_at,
+  }));
 }
 
 /* --------------------------------------------------
@@ -198,10 +198,10 @@ export async function GET() {
       );
 
     /* ----------------------------------------------
-       READ AUDIT TRAIL
+       READ AUDIT TRAIL FROM SUPABASE
     ---------------------------------------------- */
 
-    const updates = readScheduleUpdates();
+    const updates = await readScheduleUpdates();
 
     /* ----------------------------------------------
        FIND LATEST APPROVED UPDATE
@@ -271,11 +271,6 @@ export async function GET() {
 
     /* ----------------------------------------------
        CLASSIFY ALL PROGRESS REPORTS
-
-       This allows the dashboard to show:
-       - Auto-link candidates
-       - Planner review candidates
-       - Unmatched candidates
     ---------------------------------------------- */
 
     let autoLinkCandidates = 0;
@@ -298,7 +293,9 @@ export async function GET() {
           continue;
         }
 
-        if (topMatch.status === "AUTO_LINK") {
+        if (
+          topMatch.status === "AUTO_LINK"
+        ) {
           autoLinkCandidates++;
         } else if (
           topMatch.status === "PLANNER_REVIEW"
