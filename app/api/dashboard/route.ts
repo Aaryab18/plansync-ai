@@ -52,8 +52,8 @@ async function readScheduleUpdates(): Promise<ScheduleUpdate[]> {
     );
 
     throw new Error(
-      "Failed to read schedule updates from Supabase."
-    );
+  `Supabase error: ${error.message}`
+);
   }
 
   return (data || []).map((row) => ({
@@ -381,14 +381,18 @@ export async function GET() {
     );
 
     return NextResponse.json(
-      {
-        success: false,
-        error:
-          "Failed to load dashboard data.",
-      },
-      {
-        status: 500,
-      }
-    );
+  {
+    success: false,
+    error:
+      "Failed to load dashboard data.",
+    details:
+      error instanceof Error
+        ? error.message
+        : String(error),
+  },
+  {
+    status: 500,
+  }
+);
   }
 }
