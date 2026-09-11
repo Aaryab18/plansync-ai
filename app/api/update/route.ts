@@ -28,6 +28,12 @@ export async function POST(request: Request) {
       reason = "",
     } = body;
 
+    /*
+     * --------------------------------------------------
+     * VALIDATION
+     * --------------------------------------------------
+     */
+
     if (!reportId || !activityId) {
       return NextResponse.json(
         {
@@ -49,15 +55,14 @@ export async function POST(request: Request) {
     }
 
     /*
-     * IDEMPOTENCY GUARD
-     * -----------------
-     * The same report/activity pair can only be approved once.
-     * This protects the audit trail even if a user double-clicks,
-     * refreshes, or sends the same request again.
+     * --------------------------------------------------
+     * EXISTING APPROVAL CHECK
+     * --------------------------------------------------
      *
-     * Different reports may still update the same activity over time,
-     * which is valid for progressive construction execution updates.
+     * Prevents the same report/activity pair from being
+     * approved more than once.
      */
+
     if (action === "APPROVED") {
       const {
         data: existingApproval,
@@ -113,6 +118,12 @@ export async function POST(request: Request) {
       }
     }
 
+    /*
+     * --------------------------------------------------
+     * INSERT SCHEDULE UPDATE
+     * --------------------------------------------------
+     */
+
     const newUpdate = {
       report_id: reportId,
       activity_id: activityId,
@@ -130,8 +141,87 @@ export async function POST(request: Request) {
       .select()
       .single();
 
+    /*
+     * --------------------------------------------------
+     * DUPLICATE DATABASE CONSTRAINT
+     * --------------------------------------------------
+     *
+     * PostgreSQL error 23505 = unique constraint violation.
+     *
+     * This can happen when two approval requests arrive
+     * almost simultaneously:
+     *
+     * Request A -> duplicate check -> nothing found
+     * Request B -> duplicate check -> nothing found
+     * Request A -> INSERT succeeds
+     * Request B -> INSERT hits unique constraint
+     *
+     * The second request should still be treated as a
+     * successful idempotent request, not as an error.
+     */
+
     if (error) {
       console.error("SUPABASE UPDATE ERROR:", error);
+
+      if (
+        action === "APPROVED" &&
+        error.code === "23505" &&
+        error.message.includes("schedule_updates_approved_unique")
+      ) {
+        const {
+          data: existingAfterConflict,
+          error: lookupAfterConflictError,
+        } = await supabase
+          .from("schedule_updates")
+          .select(
+            "id, report_id, activity_id, actual_start, actual_end, status, action, confidence, reason, updated_at"
+          )
+          .eq("report_id", reportId)
+          .eq("activity_id", activityId)
+          .eq("action", "APPROVED")
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (lookupAfterConflictError) {
+          console.error(
+            "SUPABASE CONFLICT LOOKUP ERROR:",
+            lookupAfterConflictError
+          );
+
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                "This approval already exists, but the existing record could not be loaded.",
+              details: lookupAfterConflictError.message,
+            },
+            { status: 500 }
+          );
+        }
+
+        if (existingAfterConflict) {
+          const formattedExisting: ScheduleUpdate = {
+            reportId: existingAfterConflict.report_id,
+            activityId: existingAfterConflict.activity_id,
+            actualStart: existingAfterConflict.actual_start,
+            actualEnd: existingAfterConflict.actual_end,
+            status: existingAfterConflict.status,
+            action: existingAfterConflict.action,
+            confidence: Number(existingAfterConflict.confidence),
+            reason: existingAfterConflict.reason || "",
+            updatedAt: existingAfterConflict.updated_at,
+          };
+
+          return NextResponse.json({
+            success: true,
+            alreadyExists: true,
+            message:
+              "This schedule activity is already approved for this report. No duplicate update was created.",
+            update: formattedExisting,
+          });
+        }
+      }
 
       return NextResponse.json(
         {
@@ -142,6 +232,12 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
+
+    /*
+     * --------------------------------------------------
+     * FORMAT SUCCESS RESPONSE
+     * --------------------------------------------------
+     */
 
     const formattedUpdate: ScheduleUpdate = {
       reportId: data.report_id,
@@ -171,6 +267,10 @@ export async function POST(request: Request) {
       {
         success: false,
         error: "Failed to save schedule update.",
+        details:
+          error instanceof Error
+            ? error.message
+            : "Unknown server error.",
       },
       { status: 500 }
     );

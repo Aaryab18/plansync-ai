@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 
+import * as XLSX from "xlsx";
 import {
   MatchResult,
 } from "@/types/schedule";
@@ -43,7 +44,22 @@ type DashboardData = {
   }>;
 };
 
+type ProcessedFingerprint = {
+  key: string;
+  reportId: string;
+  source: string;
+  activityId: string | null;
+  date: string;
+  discipline: string;
+};
+
 type BatchResult = {
+  duplicate?: boolean;
+  duplicateOf?: {
+    reportId: string;
+    source: string;
+    activityId: string | null;
+  };
   report: {
     reportId: string;
     progressDescription: string;
@@ -156,6 +172,32 @@ export default function Home() {
   const [batchMessage, setBatchMessage] =
     useState("");
 
+  const [manualText, setManualText] =
+    useState(
+      "Spool erection for Line 24 completed"
+    );
+
+  const [manualReportId, setManualReportId] =
+    useState("RPT-MANUAL-001");
+
+  const [manualDate, setManualDate] =
+    useState("2026-09-07");
+
+  const [manualDiscipline, setManualDiscipline] =
+    useState("Piping");
+
+  const [selectedPdfFile, setSelectedPdfFile] =
+    useState<File | null>(null);
+
+  const [pdfLoading, setPdfLoading] =
+    useState(false);
+
+  const [pdfMessage, setPdfMessage] =
+    useState("");
+
+  const [processedFingerprints, setProcessedFingerprints] =
+    useState<ProcessedFingerprint[]>([]);
+
   /*
    * --------------------------------------------------
    * SCHEDULE SEARCH STATE
@@ -176,6 +218,9 @@ export default function Home() {
 
   const [pendingActionKey, setPendingActionKey] =
     useState("");
+
+  const [approvedMatchKeys, setApprovedMatchKeys] =
+    useState<string[]>([]);
 
   /*
    * --------------------------------------------------
@@ -221,35 +266,249 @@ export default function Home() {
 
   /*
    * --------------------------------------------------
+   * CROSS-SOURCE DUPLICATE DETECTION
+   * --------------------------------------------------
+   * A CSV row, manual entry and PDF can represent the same
+   * real-world site update while using different report IDs.
+   * We therefore compare the execution signature instead of
+   * relying only on reportId.
+   */
+
+  function normalizeDuplicateText(text: string) {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s:-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function detectDuplicateOperation(text: string) {
+    const value = text.toLowerCase();
+
+    const operations: Array<[RegExp, string]> = [
+      [/hydro\s*test|hydrotest/, "hydrotest"],
+      [/erect|erection/, "erection"],
+      [/weld|welding/, "welding"],
+      [/install|installation/, "installation"],
+      [/excavat|excavation/, "excavation"],
+      [/reinforc|reinforcement/, "reinforcement"],
+      [/concrete|concreting/, "concrete"],
+      [/shutter|shuttering/, "shuttering"],
+      [/insulat|insulation/, "insulation"],
+      [/terminat|termination/, "termination"],
+      [/earthing|grounding/, "earthing"],
+      [/cable\s+pull|pulling\s+cable/, "cable-pulling"],
+      [/test|testing/, "testing"],
+    ];
+
+    return (
+      operations.find(([pattern]) => pattern.test(value))?.[1] ||
+      "unknown-operation"
+    );
+  }
+
+  function detectDuplicateObject(text: string) {
+    const value = text.toLowerCase();
+
+    const objects: Array<[RegExp, string]> = [
+      [/spool/, "spool"],
+      [/pipe|pipeline/, "pipe"],
+      [/support/, "support"],
+      [/foundation/, "foundation"],
+      [/column/, "column"],
+      [/cable\s+tray|tray/, "cable-tray"],
+      [/cable/, "cable"],
+      [/panel/, "panel"],
+      [/transformer/, "transformer"],
+      [/lighting|light/, "lighting"],
+      [/earthing|grounding/, "earthing"],
+    ];
+
+    return (
+      objects.find(([pattern]) => pattern.test(value))?.[1] ||
+      "unknown-object"
+    );
+  }
+
+  function detectDuplicateIdentifiers(text: string) {
+    const value = text.toLowerCase();
+    const identifiers = new Set<string>();
+
+    const patterns: Array<[RegExp, string]> = [
+      [/\bline\s*[-:#]?\s*([a-z0-9]+)/i, "line"],
+      [/\bzone\s*[-:#]?\s*([a-z0-9]+)/i, "zone"],
+      [/\barea\s*[-:#]?\s*([a-z0-9]+)/i, "area"],
+      [/\bblock\s*[-:#]?\s*([a-z0-9]+)/i, "block"],
+      [/\broom\s*[-:#]?\s*([a-z0-9]+)/i, "room"],
+      [/\bpanel\s*[-:#]?\s*([a-z0-9]+)/i, "panel"],
+    ];
+
+    for (const [pattern, label] of patterns) {
+      const match = value.match(pattern);
+      if (match?.[1]) {
+        identifiers.add(`${label}:${match[1]}`);
+      }
+    }
+
+    return Array.from(identifiers).sort();
+  }
+
+  function detectDuplicateStatus(text: string) {
+    const value = text.toLowerCase();
+
+    if (/completed|complete|finished|done/.test(value)) {
+      return "COMPLETED";
+    }
+    if (/in progress|progressing|ongoing|underway|being/.test(value)) {
+      return "IN_PROGRESS";
+    }
+    if (/started|start/.test(value)) {
+      return "STARTED";
+    }
+
+    return "UNKNOWN";
+  }
+
+  function getDuplicateKey({
+    description,
+    discipline,
+    date,
+    activityId,
+    statusValue,
+  }: {
+    description: string;
+    discipline: string;
+    date: string;
+    activityId?: string | null;
+    statusValue?: string;
+  }) {
+    const normalized = normalizeDuplicateText(description);
+    const operation = detectDuplicateOperation(normalized);
+    const object = detectDuplicateObject(normalized);
+    const identifiers = detectDuplicateIdentifiers(normalized);
+    const detectedStatus = statusValue || detectDuplicateStatus(normalized);
+
+    // The duplicate identity intentionally does NOT use reportId or
+    // activityId. Different input channels can assign different report IDs
+    // to the same real-world update. The semantic execution signature is
+    // stable across CSV, Excel, JSON, manual text and PDF inputs.
+    return [
+      date.trim(),
+      discipline.trim().toLowerCase(),
+      operation,
+      object,
+      identifiers.join(",") || "no-identifier",
+      detectedStatus,
+    ].join("|");
+  }
+
+  function findExistingFingerprint(key: string) {
+    return processedFingerprints.find(
+      (item) => item.key === key
+    );
+  }
+
+  function rememberProcessedFingerprint(item: ProcessedFingerprint) {
+    setProcessedFingerprints((previous) => {
+      if (previous.some((existing) => existing.key === item.key)) {
+        return previous;
+      }
+
+      return [...previous, item];
+    });
+  }
+
+  function findDashboardDuplicate(
+    activityId: string | null,
+    date: string
+  ) {
+    if (!activityId) {
+      return null;
+    }
+
+    return (
+      dashboard?.schedule.find(
+        (activity) =>
+          activity.activityId === activityId &&
+          activity.actualStart === date
+      ) || null
+    );
+  }
+
+  /*
+   * --------------------------------------------------
    * SINGLE REPORT MATCHING
    * --------------------------------------------------
    */
 
-  async function handleMatch() {
+  async function handleMatch(overrides?: {
+    description?: string;
+    discipline?: string;
+    date?: string;
+    reportId?: string;
+    source?: string;
+  }) {
+    const matchDescription =
+      overrides?.description ?? progressDescription;
+    const matchDiscipline =
+      overrides?.discipline ?? discipline;
+    const matchDate =
+      overrides?.date ?? actualDate;
+
+    if (!matchDescription.trim()) {
+      setActionMessage("Please enter a site update before matching.");
+      return;
+    }
+
+    const source = overrides?.source || "Manual Text";
+    const preliminaryKey = getDuplicateKey({
+      description: matchDescription,
+      discipline: matchDiscipline,
+      date: matchDate,
+      statusValue: status,
+    });
+
+    const existingPreMatch = findExistingFingerprint(preliminaryKey);
+
+    if (existingPreMatch) {
+      setActionMessage(
+        `Duplicate report detected. This update was already processed via ${existingPreMatch.source}${existingPreMatch.activityId ? ` → ${existingPreMatch.activityId}` : ""}.`
+      );
+      setMatchCompleted(false);
+      return;
+    }
+
     try {
       setMatching(true);
       setActionMessage("");
 
-      // Clear previous result.
       setMatches([]);
       setSelectedMatch(null);
-
-      // New matching attempt has not completed yet.
       setMatchCompleted(false);
+
+      if (overrides?.description !== undefined) {
+        setProgressDescription(matchDescription);
+      }
+      if (overrides?.discipline !== undefined) {
+        setDiscipline(matchDiscipline);
+      }
+      if (overrides?.date !== undefined) {
+        setActualDate(matchDate);
+      }
+      if (overrides?.reportId !== undefined) {
+        setReportId(overrides.reportId);
+      }
 
       const response =
         await fetch("/api/match", {
           method: "POST",
-
           headers: {
-            "Content-Type":
-              "application/json",
+            "Content-Type": "application/json",
           },
-
           body: JSON.stringify({
-            progressDescription,
-            discipline,
-            date: actualDate,
+            progressDescription: matchDescription,
+            discipline: matchDiscipline,
+            date: matchDate,
           }),
         });
 
@@ -263,23 +522,50 @@ export default function Home() {
         );
       }
 
-      /*
-       * The API may legitimately return
-       * an empty matches array.
-       *
-       * Example:
-       * Mechanical + unknown activity
-       *
-       * In that case we still want the UI
-       * to show UNMATCHED.
-       */
-
-      setMatches(
-        data.matches || []
+      const returnedMatches: MatchResult[] = data.matches || [];
+      const bestMatch: MatchResult | null = returnedMatches[0] || null;
+      const activityId = bestMatch?.activity.activityId || null;
+      const dashboardDuplicate = findDashboardDuplicate(
+        activityId,
+        matchDate
       );
 
-      // Matching completed successfully.
+      const finalKey = getDuplicateKey({
+        description: matchDescription,
+        discipline: matchDiscipline,
+        date: matchDate,
+        activityId,
+        statusValue: status,
+      });
+
+      const existingFinal = findExistingFingerprint(finalKey);
+
+      if (existingFinal || dashboardDuplicate) {
+        const previousSource =
+          existingFinal?.source || "an earlier approved update";
+        const previousActivity =
+          existingFinal?.activityId || activityId || "the same activity";
+
+        setMatches([]);
+        setSelectedMatch(null);
+        setMatchCompleted(false);
+        setActionMessage(
+          `Duplicate report detected. This update is already processed via ${previousSource} → ${previousActivity}.`
+        );
+        return;
+      }
+
+      setMatches(returnedMatches);
       setMatchCompleted(true);
+
+      rememberProcessedFingerprint({
+        key: finalKey,
+        reportId: overrides?.reportId || reportId,
+        source,
+        activityId,
+        date: matchDate,
+        discipline: matchDiscipline,
+      });
 
     } catch (error) {
       console.error(error);
@@ -290,12 +576,139 @@ export default function Home() {
           : "Failed to process report."
       );
 
-      // Do not show UNMATCHED for an API error.
       setMatchCompleted(false);
 
     } finally {
       setMatching(false);
     }
+  }
+
+  function inferPdfDiscipline(text: string) {
+    const value = text.toLowerCase();
+
+    if (value.includes("piping") || value.includes("spool") || value.includes("hydrotest") || value.includes("hydro test")) {
+      return "Piping";
+    }
+    if (value.includes("electrical") || value.includes("cable") || value.includes("transformer") || value.includes("panel")) {
+      return "Electrical";
+    }
+    if (value.includes("civil") || value.includes("foundation") || value.includes("excavation") || value.includes("concrete")) {
+      return "Civil";
+    }
+
+    return "Piping";
+  }
+
+  function inferPdfDate(text: string) {
+    const isoMatch = text.match(/\b(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+    if (isoMatch) {
+      return `${isoMatch[1]}-${String(isoMatch[2]).padStart(2, "0")}-${String(isoMatch[3]).padStart(2, "0")}`;
+    }
+
+    const dmyMatch = text.match(/\b(\d{1,2})[-\/](\d{1,2})[-\/](20\d{2})\b/);
+    if (dmyMatch) {
+      return `${dmyMatch[3]}-${String(dmyMatch[2]).padStart(2, "0")}-${String(dmyMatch[1]).padStart(2, "0")}`;
+    }
+
+    return actualDate;
+  }
+
+  function extractUsefulPdfText(text: string) {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const candidates = lines.filter((line) =>
+      /completed|complete|finished|done|started|start|progress|erect|erection|weld|welding|install|installation|excavat|concrete|cable|testing|hydro/i.test(line)
+    );
+
+    return (candidates.length ? candidates : lines)
+      .slice(0, 12)
+      .join(". ")
+      .trim();
+  }
+
+  async function handlePdfUpload() {
+    if (!selectedPdfFile) {
+      setPdfMessage("Please select a PDF Daily Progress Report first.");
+      return;
+    }
+
+    try {
+      setPdfLoading(true);
+      setPdfMessage("Extracting text from PDF...");
+
+      const formData = new FormData();
+      formData.append("file", selectedPdfFile);
+
+      const response = await fetch("/api/pdf-extract", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.error || "Failed to extract text from the PDF."
+        );
+      }
+
+      const extractedText = extractUsefulPdfText(result.text || "");
+
+      if (!extractedText) {
+        throw new Error(
+          "No selectable text was found in this PDF. Scanned/image-only PDFs need OCR support."
+        );
+      }
+
+      const inferredDate = inferPdfDate(extractedText);
+      const inferredDiscipline = inferPdfDiscipline(extractedText);
+      const inferredReportId =
+        selectedPdfFile.name.replace(/\.pdf$/i, "") ||
+        "RPT-PDF-001";
+
+      setManualText(extractedText);
+      setManualDate(inferredDate);
+      setManualDiscipline(inferredDiscipline);
+      setManualReportId(inferredReportId);
+
+      setPdfMessage(
+        `Extracted ${result.pageCount} page${result.pageCount === 1 ? "" : "s"}. Matching the extracted site update...`
+      );
+
+      await handleMatch({
+        description: extractedText,
+        discipline: inferredDiscipline,
+        date: inferredDate,
+        reportId: inferredReportId,
+        source: "PDF",
+      });
+
+      setPdfMessage(
+        `PDF processed successfully: ${selectedPdfFile.name}`
+      );
+    } catch (error) {
+      console.error(error);
+      setPdfMessage(
+        error instanceof Error
+          ? error.message
+          : "Failed to extract and process the PDF."
+      );
+    } finally {
+      setPdfLoading(false);
+    }
+  }
+
+  function handleManualMatch() {
+    handleMatch({
+      description: manualText,
+      discipline: manualDiscipline,
+      date: manualDate,
+      reportId: manualReportId || "RPT-MANUAL-001",
+      source: "Manual Text",
+    });
   }
 
   /*
@@ -384,6 +797,17 @@ export default function Home() {
         );
       }
 
+      if (action === "APPROVED") {
+        setApprovedMatchKeys((previous) => {
+          const approvedKey =
+            `${reportId}-${result.activity.activityId}`;
+
+          return previous.includes(approvedKey)
+            ? previous
+            : [...previous, approvedKey];
+        });
+      }
+
       setActionMessage(
         data.message ||
           "Schedule updated successfully."
@@ -434,79 +858,308 @@ export default function Home() {
 
   /*
    * --------------------------------------------------
-   * BATCH CSV PROCESSING
+   * BATCH FILE NORMALIZATION + PROCESSING
    * --------------------------------------------------
+   * CSV is still the backend format, but the UI now accepts
+   * CSV, Excel and JSON. Excel/JSON are normalized in the
+   * browser and sent through the same proven batch pipeline.
    */
 
-  async function handleBatchUpload() {
-    if (!selectedFile) {
-      setBatchMessage(
-        "Please select a CSV file first."
+  function normalizeJsonRows(value: unknown): Record<string, unknown>[] {
+    if (Array.isArray(value)) {
+      return value.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) &&
+          typeof item === "object" &&
+          !Array.isArray(item)
       );
-
-      return;
     }
 
-    try {
-      setBatchLoading(true);
-      setBatchMessage("");
-      setBatchResults([]);
-      setBatchSummary(null);
+    if (value && typeof value === "object") {
+      const objectValue = value as Record<string, unknown>;
 
-      const formData =
-        new FormData();
+      for (const key of ["reports", "data", "rows", "progressReports"]) {
+        if (Array.isArray(objectValue[key])) {
+          return normalizeJsonRows(objectValue[key]);
+        }
+      }
+    }
 
-      formData.append(
-        "file",
-        selectedFile
+    return [];
+  }
+
+  function normalizeRowsForBatch(
+    rows: Record<string, unknown>[]
+  ): Record<string, unknown>[] {
+    return rows.map((row, index) => {
+      const normalized = Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [
+          key.trim(),
+          value,
+        ])
       );
 
-      const response =
-        await fetch(
-          "/api/batch-match",
-          {
-            method: "POST",
-            body: formData,
+      const findValue = (...keys: string[]) => {
+        for (const key of keys) {
+          const found = Object.entries(normalized).find(
+            ([existingKey]) =>
+              existingKey.toLowerCase().replace(/[ _-]/g, "") ===
+              key.toLowerCase().replace(/[ _-]/g, "")
+          );
+
+          if (found?.[1] !== undefined && found?.[1] !== null) {
+            return found[1];
           }
-        );
+        }
 
-      const data =
-        await response.json();
+        return "";
+      };
 
-      if (!response.ok) {
+      return {
+        reportId:
+          findValue("reportId", "report_id", "Report ID", "id") ||
+          `RPT-IMPORT-${String(index + 1).padStart(3, "0")}`,
+        progressDescription: findValue(
+          "progressDescription",
+          "progress_description",
+          "Progress Description",
+          "description",
+          "progress",
+          "siteUpdate",
+          "site_update"
+        ),
+        date: findValue(
+          "date",
+          "Date",
+          "actualDate",
+          "actual_date"
+        ),
+        discipline: findValue(
+          "discipline",
+          "Discipline",
+          "department"
+        ),
+      };
+    });
+  }
+
+  async function prepareBatchFile(file: File): Promise<File> {
+    const extension =
+      file.name.split(".").pop()?.toLowerCase() || "";
+
+    if (extension === "csv") {
+      return file;
+    }
+
+    if (extension === "xlsx" || extension === "xls") {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+
+      if (!firstSheetName) {
+        throw new Error("The Excel file does not contain a worksheet.");
+      }
+
+      const sheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: "",
+      });
+      const normalizedRows = normalizeRowsForBatch(rows);
+
+      if (!normalizedRows.length) {
+        throw new Error("The Excel file does not contain any data rows.");
+      }
+
+      const csv = XLSX.utils.sheet_to_csv(
+        XLSX.utils.json_to_sheet(normalizedRows)
+      );
+
+      return new File(
+        [csv],
+        `${file.name.replace(/\.(xlsx|xls)$/i, "")}.csv`,
+        { type: "text/csv" }
+      );
+    }
+
+    if (extension === "json") {
+      const text = await file.text();
+      let parsed: unknown;
+
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error("The JSON file is not valid JSON.");
+      }
+
+      const rows = normalizeJsonRows(parsed);
+
+      if (!rows.length) {
         throw new Error(
-          data.error ||
-            "Failed to process CSV."
+          "JSON must contain an array of progress reports, or an object with reports, data, rows, or progressReports."
         );
       }
 
-      setBatchResults(
-        data.results || []
+      const normalizedRows = normalizeRowsForBatch(rows);
+      const csv = XLSX.utils.sheet_to_csv(
+        XLSX.utils.json_to_sheet(normalizedRows)
       );
 
-      setBatchSummary(
-        data.summary || null
+      return new File(
+        [csv],
+        `${file.name.replace(/\.json$/i, "")}.csv`,
+        { type: "text/csv" }
       );
-
-      setBatchMessage(
-        `Successfully processed ${
-          data.summary?.totalReports || 0
-        } progress reports.`
-      );
-
-    } catch (error) {
-      console.error(error);
-
-      setBatchMessage(
-        error instanceof Error
-          ? error.message
-          : "Failed to process CSV."
-      );
-
-    } finally {
-      setBatchLoading(false);
     }
+
+    throw new Error(
+      "Unsupported file type. Please upload CSV, Excel (.xlsx/.xls), or JSON."
+    );
   }
+
+  async function handleBatchUpload() {
+  if (!selectedFile) {
+    setBatchMessage(
+      "Please select a CSV, Excel, or JSON file first."
+    );
+    return;
+  }
+
+  try {
+    setBatchLoading(true);
+    setBatchMessage("");
+    setBatchResults([]);
+    setBatchSummary(null);
+
+    const uploadFile = await prepareBatchFile(selectedFile);
+
+    const formData = new FormData();
+    formData.append("file", uploadFile);
+
+    const response = await fetch("/api/batch-match", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error ||
+          "Failed to process the uploaded file."
+      );
+    }
+
+    const sourceType =
+      selectedFile.name.split(".").pop()?.toUpperCase() ||
+      "FILE";
+
+    const incomingResults: BatchResult[] =
+      data.results || [];
+
+    /*
+     * --------------------------------------------------
+     * BATCH DEDUPLICATION
+     *
+     * IMPORTANT:
+     * Only remove duplicates INSIDE THIS UPLOAD.
+     *
+     * Do not compare against previous browser sessions
+     * or the dashboard schedule here. A user should be
+     * able to upload the same demo dataset again.
+     * --------------------------------------------------
+     */
+
+    const batchSeen =
+      new Map<string, ProcessedFingerprint>();
+
+    const uniqueResults: BatchResult[] = [];
+
+    let duplicateCount = 0;
+
+    for (const result of incomingResults) {
+      const activityId =
+        result.bestMatch?.activity.activityId || null;
+
+      const key = getDuplicateKey({
+        description:
+          result.report.progressDescription,
+        discipline:
+          result.report.discipline,
+        date:
+          result.report.date,
+        activityId,
+        statusValue:
+          result.executionEvent.status,
+      });
+
+      /*
+       * Only check duplicates already encountered
+       * in THIS uploaded file.
+       */
+      if (batchSeen.has(key)) {
+        duplicateCount += 1;
+        continue;
+      }
+
+      const fingerprint: ProcessedFingerprint = {
+        key,
+        reportId:
+          result.report.reportId,
+        source: sourceType,
+        activityId,
+        date:
+          result.report.date,
+        discipline:
+          result.report.discipline,
+      };
+
+      batchSeen.set(key, fingerprint);
+      uniqueResults.push(result);
+    }
+
+    setBatchResults(uniqueResults);
+
+    const originalSummary =
+      data.summary || {};
+
+    setBatchSummary({
+      ...originalSummary,
+      totalReports:
+        uniqueResults.length,
+    });
+
+    /*
+     * Remember the processed fingerprints for other
+     * parts of the application, but DO NOT use them
+     * to hide a newly uploaded batch.
+     */
+    for (const item of batchSeen.values()) {
+      rememberProcessedFingerprint(item);
+    }
+
+    if (duplicateCount > 0) {
+      setBatchMessage(
+        `Processed ${uniqueResults.length} unique reports from ${sourceType}. Skipped ${duplicateCount} duplicate report${
+          duplicateCount === 1 ? "" : "s"
+        } within this upload.`
+      );
+    } else {
+      setBatchMessage(
+        `Successfully processed ${uniqueResults.length} progress reports from ${sourceType}.`
+      );
+    }
+  } catch (error) {
+    console.error(error);
+
+    setBatchMessage(
+      error instanceof Error
+        ? error.message
+        : "Failed to process the uploaded file."
+    );
+  } finally {
+    setBatchLoading(false);
+  }
+}
 
   /*
    * --------------------------------------------------
@@ -570,6 +1223,23 @@ export default function Home() {
             "Failed to approve update."
         );
       }
+
+      const approvedKey = getDuplicateKey({
+        description: result.report.progressDescription,
+        discipline: result.report.discipline,
+        date: result.report.date,
+        activityId: result.bestMatch.activity.activityId,
+        statusValue: result.executionEvent.status,
+      });
+
+      rememberProcessedFingerprint({
+        key: approvedKey,
+        reportId: result.report.reportId,
+        source: "Batch",
+        activityId: result.bestMatch.activity.activityId,
+        date: result.report.date,
+        discipline: result.report.discipline,
+      });
 
       setBatchResults(
         (previous) =>
@@ -880,7 +1550,7 @@ export default function Home() {
           >
             <PipelineCard
               title="1. Capture"
-              description="Site report / CSV"
+              description="CSV / Excel / JSON / PDF / Text"
             />
 
             <PipelineCard
@@ -903,6 +1573,271 @@ export default function Home() {
               description="Schedule + audit trail"
             />
           </div>
+        </section>
+
+        {/* --------------------------------------------------
+            UNSTRUCTURED SITE UPDATE
+        -------------------------------------------------- */}
+
+        <section
+          style={{
+            background: "white",
+            border: "1px solid #e5e7eb",
+            borderRadius: "14px",
+            padding: "24px",
+            marginBottom: "28px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "20px",
+              flexWrap: "wrap",
+              marginBottom: "18px",
+            }}
+          >
+            <div>
+              <h2
+                style={{
+                  margin: 0,
+                  fontSize: "22px",
+                }}
+              >
+                Unstructured Site Update
+              </h2>
+              <p
+                style={{
+                  margin: "6px 0 0",
+                  color: "#6b7280",
+                }}
+              >
+                Process a supervisor update directly as text or extract selectable text from a PDF Daily Progress Report.
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "8px",
+              }}
+            >
+              {["Manual Text", "PDF"].map((type) => (
+                <span
+                  key={type}
+                  style={{
+                    padding: "5px 9px",
+                    borderRadius: "999px",
+                    background: "#f9fafb",
+                    border: "1px solid #e5e7eb",
+                    color: "#374151",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                  }}
+                >
+                  {type}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "12px",
+              marginBottom: "14px",
+            }}
+          >
+            <label style={{ fontSize: "13px", color: "#374151", fontWeight: 600 }}>
+              Report ID
+              <input
+                value={manualReportId}
+                onChange={(event) => setManualReportId(event.target.value)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: "6px",
+                  boxSizing: "border-box",
+                  padding: "10px 12px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "8px",
+                  fontSize: "14px",
+                }}
+              />
+            </label>
+
+            <label style={{ fontSize: "13px", color: "#374151", fontWeight: 600 }}>
+              Date
+              <input
+                type="date"
+                value={manualDate}
+                onChange={(event) => setManualDate(event.target.value)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: "6px",
+                  boxSizing: "border-box",
+                  padding: "10px 12px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "8px",
+                  fontSize: "14px",
+                }}
+              />
+            </label>
+
+            <label style={{ fontSize: "13px", color: "#374151", fontWeight: 600 }}>
+              Discipline
+              <select
+                value={manualDiscipline}
+                onChange={(event) => setManualDiscipline(event.target.value)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: "6px",
+                  boxSizing: "border-box",
+                  padding: "10px 12px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "8px",
+                  fontSize: "14px",
+                  background: "white",
+                }}
+              >
+                <option>Civil</option>
+                <option>Piping</option>
+                <option>Electrical</option>
+                <option>Instrumentation</option>
+                <option>Mechanical</option>
+                <option>HSE</option>
+              </select>
+            </label>
+          </div>
+
+          <label
+            style={{
+              display: "block",
+              fontSize: "13px",
+              color: "#374151",
+              fontWeight: 600,
+              marginBottom: "14px",
+            }}
+          >
+            Site Update / Extracted PDF Text
+            <textarea
+              value={manualText}
+              onChange={(event) => setManualText(event.target.value)}
+              placeholder="Example: Spool erection for Line 24 completed"
+              rows={4}
+              style={{
+                display: "block",
+                width: "100%",
+                boxSizing: "border-box",
+                marginTop: "6px",
+                padding: "12px",
+                border: "1px solid #d1d5db",
+                borderRadius: "9px",
+                fontSize: "14px",
+                lineHeight: 1.5,
+                resize: "vertical",
+                fontFamily: "inherit",
+              }}
+            />
+          </label>
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: "10px",
+            }}
+          >
+            <button
+              onClick={handleManualMatch}
+              disabled={matching || !manualText.trim()}
+              style={{
+                border: "none",
+                borderRadius: "9px",
+                padding: "11px 18px",
+                background: matching ? "#9ca3af" : "#2563eb",
+                color: "white",
+                fontWeight: 700,
+                cursor: matching ? "not-allowed" : "pointer",
+              }}
+            >
+              {matching ? "Matching..." : "Match Site Update"}
+            </button>
+
+            <label
+              style={{
+                border: "1px solid #d1d5db",
+                borderRadius: "9px",
+                padding: "10px 14px",
+                background: "white",
+                color: "#374151",
+                fontWeight: 700,
+                fontSize: "14px",
+                cursor: pdfLoading ? "not-allowed" : "pointer",
+              }}
+            >
+              Select PDF
+              <input
+                type="file"
+                accept=".pdf,application/pdf"
+                disabled={pdfLoading}
+                onChange={(event) => {
+                  setSelectedPdfFile(event.target.files?.[0] || null);
+                  setPdfMessage("");
+                }}
+                style={{ display: "none" }}
+              />
+            </label>
+
+            <button
+              onClick={handlePdfUpload}
+              disabled={pdfLoading || !selectedPdfFile}
+              style={{
+                border: "1px solid #d1d5db",
+                borderRadius: "9px",
+                padding: "11px 18px",
+                background: pdfLoading || !selectedPdfFile ? "#f3f4f6" : "#111827",
+                color: pdfLoading || !selectedPdfFile ? "#9ca3af" : "white",
+                fontWeight: 700,
+                cursor: pdfLoading || !selectedPdfFile ? "not-allowed" : "pointer",
+              }}
+            >
+              {pdfLoading ? "Processing PDF..." : "Process PDF Report"}
+            </button>
+          </div>
+
+          {selectedPdfFile && (
+            <div
+              style={{
+                marginTop: "12px",
+                fontSize: "13px",
+                color: "#4b5563",
+              }}
+            >
+              Selected PDF: <strong>{selectedPdfFile.name}</strong>
+            </div>
+          )}
+
+          {pdfMessage && (
+            <div
+              style={{
+                marginTop: "12px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                background: pdfMessage.toLowerCase().includes("failed") || pdfMessage.toLowerCase().includes("no selectable") ? "#fef2f2" : "#f0fdf4",
+                color: pdfMessage.toLowerCase().includes("failed") || pdfMessage.toLowerCase().includes("no selectable") ? "#991b1b" : "#166534",
+                fontSize: "14px",
+              }}
+            >
+              {pdfMessage}
+            </div>
+          )}
         </section>
 
         {/* --------------------------------------------------
@@ -947,10 +1882,7 @@ export default function Home() {
                   color: "#6b7280",
                 }}
               >
-                Upload a CSV containing
-                multiple daily site progress
-                reports and let KaryaSanket
-                link them to the schedule.
+                Upload structured daily site progress reports as CSV, Excel, or JSON. For PDF reports or direct supervisor text, use Unstructured Site Update above.
               </p>
             </div>
 
@@ -965,7 +1897,7 @@ export default function Home() {
                 fontWeight: 700,
               }}
             >
-              CSV INGESTION
+              MULTI-FORMAT INGESTION
             </div>
           </div>
 
@@ -980,7 +1912,7 @@ export default function Home() {
           >
             <input
               type="file"
-              accept=".csv"
+              accept=".csv,.xlsx,.xls,.json"
               onChange={
                 handleFileChange
               }
@@ -1004,6 +1936,32 @@ export default function Home() {
                 </strong>
               </div>
             )}
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "8px",
+                marginBottom: "14px",
+              }}
+            >
+              {["CSV", "Excel", "JSON"].map((type) => (
+                <span
+                  key={type}
+                  style={{
+                    padding: "5px 9px",
+                    borderRadius: "999px",
+                    background: "white",
+                    border: "1px solid #dbeafe",
+                    color: "#1e40af",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                  }}
+                >
+                  {type}
+                </span>
+              ))}
+            </div>
 
             <button
               onClick={
@@ -1029,7 +1987,7 @@ export default function Home() {
             >
               {batchLoading
                 ? "Processing Reports..."
-                : "Process CSV Reports"}
+                : "Process Uploaded Reports"}
             </button>
 
             {batchMessage && (
@@ -2267,7 +3225,7 @@ export default function Home() {
           />
 
           <button
-            onClick={handleMatch}
+            onClick={() => handleMatch()}
             disabled={matching}
             style={{
               border: "none",
@@ -2763,89 +3721,122 @@ export default function Home() {
                         {/* APPROVE / REJECT */}
 
                         {index === 0 &&
-                          result.status !== "UNMATCHED" && (() => {
-                            const alreadyApproved =
-                              dashboard?.schedule.some(
-                                (activity) =>
-                                  activity.activityId ===
-                                    result.activity.activityId &&
-                                  activity.linkedReportId === reportId
-                              ) ?? false;
+  result.status !== "UNMATCHED" &&
+  (() => {
+    const approvalKey =
+      `${reportId}-${result.activity.activityId}`;
 
-                            const isPending =
-                              pendingActionKey ===
-                              `${reportId}-${result.activity.activityId}`;
+    const alreadyApproved =
+      approvedMatchKeys.includes(approvalKey) ||
+      (
+        dashboard?.schedule.some(
+          (activity) =>
+            activity.activityId ===
+              result.activity.activityId &&
+            activity.linkedReportId === reportId
+        ) ?? false
+      );
 
-                            return (
-                              <div
-                                style={{
-                                  marginTop: "14px",
-                                  display: "flex",
-                                  gap: "8px",
-                                  flexWrap: "wrap",
-                                  alignItems: "center",
-                                }}
-                              >
-                                <button
-                                  disabled={alreadyApproved || isPending}
-                                  onClick={() =>
-                                    handleScheduleAction(
-                                      "APPROVED",
-                                      result
-                                    )
-                                  }
-                                  style={{
-                                    border: "none",
-                                    borderRadius: "8px",
-                                    padding: "9px 13px",
-                                    background:
-                                      alreadyApproved
-                                        ? "#9ca3af"
-                                        : isPending
-                                        ? "#86efac"
-                                        : "#16a34a",
-                                    color: "white",
-                                    fontWeight: 700,
-                                    cursor:
-                                      alreadyApproved || isPending
-                                        ? "not-allowed"
-                                        : "pointer",
-                                  }}
-                                >
-                                  {alreadyApproved
-                                    ? "✓ Already Approved"
-                                    : isPending
-                                    ? "Saving..."
-                                    : "Approve & Update Schedule"}
-                                </button>
+    const isPending =
+      pendingActionKey === approvalKey;
 
-                                {!alreadyApproved && (
-                                  <button
-                                    disabled={isPending}
-                                    onClick={() =>
-                                      handleScheduleAction(
-                                        "REJECTED",
-                                        result
-                                      )
-                                    }
-                                    style={{
-                                      border: "1px solid #d1d5db",
-                                      borderRadius: "8px",
-                                      padding: "9px 13px",
-                                      background: "white",
-                                      color: "#374151",
-                                      fontWeight: 700,
-                                      cursor: isPending
-                                        ? "not-allowed"
-                                        : "pointer",
-                                    }}
-                                  >
-                                    Reject Match
-                                  </button>
-                                )}
-                              </div>
-                            );
-                          })()}
+    return (
+      <div
+        style={{
+          marginTop: "14px",
+          width: "100%",
+        }}
+      >
+        {alreadyApproved ? (
+          <div
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "11px 12px",
+              border: "1px solid #bbf7d0",
+              borderRadius: "9px",
+              background: "#f0fdf4",
+              color: "#166534",
+              fontSize: "12px",
+              fontWeight: 850,
+            }}
+          >
+            ✓ APPROVED · Schedule Updated
+
+            <div
+              style={{
+                marginTop: 3,
+                color: "#4b5563",
+                fontSize: "10px",
+                fontWeight: 600,
+              }}
+            >
+              {result.activity.activityId} has been linked to {reportId}
+            </div>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
+            <button
+              disabled={isPending}
+              onClick={() =>
+                handleScheduleAction(
+                  "APPROVED",
+                  result
+                )
+              }
+              style={{
+                border: "none",
+                borderRadius: "8px",
+                padding: "9px 13px",
+                background: isPending
+                  ? "#86efac"
+                  : "#16a34a",
+                color: "white",
+                fontWeight: 700,
+                cursor: isPending
+                  ? "not-allowed"
+                  : "pointer",
+              }}
+            >
+              {isPending
+                ? "Saving..."
+                : "Approve & Update Schedule"}
+            </button>
+
+            <button
+              disabled={isPending}
+              onClick={() =>
+                handleScheduleAction(
+                  "REJECTED",
+                  result
+                )
+              }
+              style={{
+                border: "1px solid #d1d5db",
+                borderRadius: "8px",
+                padding: "9px 13px",
+                background: "white",
+                color: "#374151",
+                fontWeight: 700,
+                cursor: isPending
+                  ? "not-allowed"
+                  : "pointer",
+              }}
+            >
+              Reject Match
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  })()}
                       </div>
                     )
                   )
