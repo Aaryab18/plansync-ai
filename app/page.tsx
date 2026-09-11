@@ -615,6 +615,26 @@ export default function Home() {
     ) || [];
 
   /*
+   * Keep the recent-decision panel clean when the same
+   * report/activity pair has been tested multiple times.
+   * The backend audit trail remains untouched; this only
+   * prevents duplicate visual entries in the dashboard.
+   */
+  const uniqueRecentUpdates =
+    dashboard?.recentUpdates
+      ? Array.from(
+          new Map(
+            dashboard.recentUpdates.map(
+              (update) => [
+                `${update.reportId}-${update.activityId}-${update.action}`,
+                update,
+              ]
+            )
+          ).values()
+        ).slice(0, 4)
+      : [];
+
+  /*
    * --------------------------------------------------
    * UI
    * --------------------------------------------------
@@ -653,7 +673,7 @@ export default function Home() {
               letterSpacing: "0.05em",
             }}
           >
-            PLANSYNC AI
+            KARYASANKET
           </div>
 
           <h1
@@ -677,7 +697,8 @@ export default function Home() {
           >
             Connect messy construction site
             updates with structured L5/L6
-            project schedules.
+            project schedules — with confidence,
+            planner validation, and an audit trail.
           </p>
         </section>
 
@@ -858,7 +879,7 @@ export default function Home() {
               >
                 Upload a CSV containing
                 multiple daily site progress
-                reports and let PlanSync AI
+                reports and let KaryaSanket
                 link them to the schedule.
               </p>
             </div>
@@ -1412,11 +1433,11 @@ export default function Home() {
                 />
 
                 <AnalyticsCard
-                  title="Linking Rate"
+                  title="Match Coverage"
                   value={`${calculateLinkingRate(
                     dashboard
                   )}%`}
-                  description="Reports with confident links"
+                  description="Reports mapped to a schedule candidate"
                 />
               </div>
 
@@ -2474,7 +2495,7 @@ export default function Home() {
                                       800,
                                   }}
                                 >
-                                  TOP MATCH
+                                  RECOMMENDED MATCH
                                 </span>
                               )}
                             </div>
@@ -2498,15 +2519,17 @@ export default function Home() {
                               style={{
                                 marginTop:
                                   "8px",
-                                fontSize:
-                                  "13px",
-                                color:
-                                  "#6b7280",
+                                padding: "10px 12px",
+                                borderRadius: "8px",
+                                background: index === 0 ? "#eff6ff" : "#f3f4f6",
+                                color: "#374151",
+                                fontSize: "13px",
+                                lineHeight: 1.5,
                               }}
                             >
-                              {
-                                result.reason
-                              }
+                              <strong style={{ color: "#1d4ed8" }}>
+                                Why this match:</strong>
+                              {result.reason}
                             </div>
                           </div>
 
@@ -2753,15 +2776,14 @@ export default function Home() {
             Recent Schedule Decisions
           </h2>
 
-          {dashboard?.recentUpdates
-            ?.length ? (
+          {uniqueRecentUpdates.length ? (
             <div
               style={{
                 display: "grid",
                 gap: "10px",
               }}
             >
-              {dashboard.recentUpdates.map(
+              {uniqueRecentUpdates.map(
                 (
                   update,
                   index
@@ -2866,7 +2888,7 @@ export default function Home() {
               fontSize: "22px",
             }}
           >
-            PlanSync AI Workflow
+            KaryaSanket Workflow
           </h2>
 
           <div
