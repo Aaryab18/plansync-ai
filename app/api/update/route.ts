@@ -48,6 +48,71 @@ export async function POST(request: Request) {
       );
     }
 
+    /*
+     * IDEMPOTENCY GUARD
+     * -----------------
+     * The same report/activity pair can only be approved once.
+     * This protects the audit trail even if a user double-clicks,
+     * refreshes, or sends the same request again.
+     *
+     * Different reports may still update the same activity over time,
+     * which is valid for progressive construction execution updates.
+     */
+    if (action === "APPROVED") {
+      const {
+        data: existingApproval,
+        error: existingApprovalError,
+      } = await supabase
+        .from("schedule_updates")
+        .select(
+          "id, report_id, activity_id, actual_start, actual_end, status, action, confidence, reason, updated_at"
+        )
+        .eq("report_id", reportId)
+        .eq("activity_id", activityId)
+        .eq("action", "APPROVED")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingApprovalError) {
+        console.error(
+          "SUPABASE DUPLICATE CHECK ERROR:",
+          existingApprovalError
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Failed to validate existing schedule approval.",
+            details: existingApprovalError.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      if (existingApproval) {
+        const formattedExisting: ScheduleUpdate = {
+          reportId: existingApproval.report_id,
+          activityId: existingApproval.activity_id,
+          actualStart: existingApproval.actual_start,
+          actualEnd: existingApproval.actual_end,
+          status: existingApproval.status,
+          action: existingApproval.action,
+          confidence: Number(existingApproval.confidence),
+          reason: existingApproval.reason || "",
+          updatedAt: existingApproval.updated_at,
+        };
+
+        return NextResponse.json({
+          success: true,
+          alreadyExists: true,
+          message:
+            "This schedule activity is already approved for this report. No duplicate update was created.",
+          update: formattedExisting,
+        });
+      }
+    }
+
     const newUpdate = {
       report_id: reportId,
       activity_id: activityId,
@@ -92,6 +157,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      alreadyExists: false,
       message:
         action === "APPROVED"
           ? "Schedule activity updated successfully."

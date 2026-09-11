@@ -171,6 +171,12 @@ export default function Home() {
   const [scheduleStatus, setScheduleStatus] =
     useState("ALL");
 
+  const [showScheduleDetails, setShowScheduleDetails] =
+    useState(false);
+
+  const [pendingActionKey, setPendingActionKey] =
+    useState("");
+
   /*
    * --------------------------------------------------
    * LOAD DASHBOARD
@@ -302,7 +308,35 @@ export default function Home() {
     action: "APPROVED" | "REJECTED",
     result: MatchResult
   ) {
+    const actionKey = `${reportId}-${result.activity.activityId}`;
+
+    // Prevent accidental double-clicks while the request is in flight.
+    if (pendingActionKey === actionKey) {
+      return;
+    }
+
+    // An already-linked activity should never be approved again for the
+    // same report. The backend also enforces this as an idempotency guard.
+    const existingActivity = dashboard?.schedule.find(
+      (activity) =>
+        activity.activityId === result.activity.activityId
+    );
+
+    if (
+      action === "APPROVED" &&
+      existingActivity?.linkedReportId === reportId
+    ) {
+      setSelectedMatch(result);
+      setActionMessage(
+        `${result.activity.activityId} is already approved for ${reportId}.`
+      );
+      setScheduleSearch(result.activity.activityId);
+      setShowScheduleDetails(true);
+      return;
+    }
+
     try {
+      setPendingActionKey(actionKey);
       setActionMessage("");
 
       const response =
@@ -357,11 +391,14 @@ export default function Home() {
 
       setSelectedMatch(result);
 
-      await loadDashboard();
-
+      // Put the updated activity at the top of the schedule view and
+      // open the compact table so the judge can immediately see the change.
       setScheduleSearch(
         result.activity.activityId
       );
+      setShowScheduleDetails(true);
+
+      await loadDashboard();
 
     } catch (error) {
       console.error(error);
@@ -371,6 +408,8 @@ export default function Home() {
           ? error.message
           : "Failed to update schedule."
       );
+    } finally {
+      setPendingActionKey("");
     }
   }
 
@@ -578,8 +617,38 @@ export default function Home() {
    * --------------------------------------------------
    */
 
+  const sortedSchedule =
+    [...(dashboard?.schedule ?? [])].sort(
+      (a, b) => {
+        // Linked/updated activities always appear first. This makes a
+        // freshly approved activity immediately visible to the planner.
+        const aLinked = a.linkedReportId ? 1 : 0;
+        const bLinked = b.linkedReportId ? 1 : 0;
+
+        if (bLinked !== aLinked) {
+          return bLinked - aLinked;
+        }
+
+        const statusRank: Record<string, number> = {
+          COMPLETED: 3,
+          IN_PROGRESS: 2,
+          STARTED: 1,
+          NOT_STARTED: 0,
+        };
+
+        const aStatus = statusRank[a.currentStatus] ?? 0;
+        const bStatus = statusRank[b.currentStatus] ?? 0;
+
+        if (bStatus !== aStatus) {
+          return bStatus - aStatus;
+        }
+
+        return a.plannedStart.localeCompare(b.plannedStart);
+      }
+    );
+
   const filteredSchedule =
-    dashboard?.schedule.filter(
+    sortedSchedule.filter(
       (activity) => {
         const search =
           scheduleSearch
@@ -612,24 +681,25 @@ export default function Home() {
           matchesStatus
         );
       }
-    ) || [];
+    );
 
-  /*
-   * Keep the recent-decision panel clean when the same
-   * report/activity pair has been tested multiple times.
-   * The backend audit trail remains untouched; this only
-   * prevents duplicate visual entries in the dashboard.
-   */
+  // Keep one latest decision per report/activity pair. Older duplicate
+  // approvals remain in the audit database, but are never shown repeatedly
+  // in the presentation dashboard.
   const uniqueRecentUpdates =
     dashboard?.recentUpdates
       ? Array.from(
           new Map(
-            dashboard.recentUpdates.map(
-              (update) => [
-                `${update.reportId}-${update.activityId}-${update.action}`,
+            [...dashboard.recentUpdates]
+              .sort(
+                (a, b) =>
+                  new Date(b.updatedAt).getTime() -
+                  new Date(a.updatedAt).getTime()
+              )
+              .map((update) => [
+                `${update.reportId}-${update.activityId}`,
                 update,
-              ]
-            )
+              ])
           ).values()
         ).slice(0, 4)
       : [];
@@ -1685,12 +1755,10 @@ export default function Home() {
           <div
             style={{
               display: "flex",
-              justifyContent:
-                "space-between",
+              justifyContent: "space-between",
               alignItems: "center",
-              gap: "20px",
+              gap: "16px",
               flexWrap: "wrap",
-              marginBottom: "18px",
             }}
           >
             <div>
@@ -1705,321 +1773,344 @@ export default function Home() {
 
               <p
                 style={{
-                  margin:
-                    "6px 0 0",
+                  margin: "6px 0 0",
                   color: "#6b7280",
                 }}
               >
-                View planned activities
-                and AI-linked actual
-                execution.
+                Updated activities are prioritized; the full schedule stays compact.
               </p>
             </div>
-          </div>
 
-          {/* FILTERS */}
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns:
-                "2fr 1fr 1fr",
-              gap: "10px",
-              marginBottom: "18px",
-            }}
-          >
-            <input
-              value={scheduleSearch}
-              onChange={(event) =>
-                setScheduleSearch(
-                  event.target.value
-                )
-              }
-              placeholder="Search activity ID or description..."
-              style={{
-                padding:
-                  "11px 12px",
-                border:
-                  "1px solid #d1d5db",
-                borderRadius: "8px",
-                outline: "none",
-              }}
-            />
-
-            <select
-              value={
-                scheduleDiscipline
-              }
-              onChange={(event) =>
-                setScheduleDiscipline(
-                  event.target.value
+            <button
+              onClick={() =>
+                setShowScheduleDetails(
+                  (previous) => !previous
                 )
               }
               style={{
-                padding:
-                  "11px 12px",
-                border:
-                  "1px solid #d1d5db",
+                border: "1px solid #d1d5db",
                 borderRadius: "8px",
+                padding: "9px 13px",
+                background: "white",
+                color: "#111827",
+                fontWeight: 700,
+                cursor: "pointer",
               }}
             >
-              <option value="ALL">
-                All Disciplines
-              </option>
-
-              <option value="Civil">
-                Civil
-              </option>
-
-              <option value="Piping">
-                Piping
-              </option>
-
-              <option value="Electrical">
-                Electrical
-              </option>
-
-              <option value="Instrumentation">
-                Instrumentation
-              </option>
-
-              <option value="Mechanical">
-                Mechanical
-              </option>
-
-              <option value="HSE">
-                HSE
-              </option>
-            </select>
-
-            <select
-              value={
-                scheduleStatus
-              }
-              onChange={(event) =>
-                setScheduleStatus(
-                  event.target.value
-                )
-              }
-              style={{
-                padding:
-                  "11px 12px",
-                border:
-                  "1px solid #d1d5db",
-                borderRadius: "8px",
-              }}
-            >
-              <option value="ALL">
-                All Statuses
-              </option>
-
-              <option value="PLANNED">
-                Planned
-              </option>
-
-              <option value="STARTED">
-                Started
-              </option>
-
-              <option value="IN_PROGRESS">
-                In Progress
-              </option>
-
-              <option value="COMPLETED">
-                Completed
-              </option>
-            </select>
+              {showScheduleDetails
+                ? "Hide Schedule"
+                : `View ${dashboard?.totalActivities ?? 0} Activities`}
+            </button>
           </div>
 
-          {/* TABLE */}
-
-          <div
-            style={{
-              overflowX: "auto",
-            }}
-          >
-            <table
-              style={{
-                width: "100%",
-                borderCollapse:
-                  "collapse",
-                fontSize: "14px",
-              }}
-            >
-              <thead>
-                <tr>
-                  <th style={tableHeaderStyle}>
-                    Activity
-                  </th>
-
-                  <th style={tableHeaderStyle}>
-                    Discipline
-                  </th>
-
-                  <th style={tableHeaderStyle}>
-                    Planned
-                  </th>
-
-                  <th style={tableHeaderStyle}>
-                    Actual
-                  </th>
-
-                  <th style={tableHeaderStyle}>
-                    Status
-                  </th>
-
-                  <th style={tableHeaderStyle}>
-                    AI Link
-                  </th>
-
-                  <th style={tableHeaderStyle}>
-                    Confidence
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filteredSchedule.map(
-                  (activity) => (
-                    <tr
-                      key={
-                        activity.activityId
-                      }
-                    >
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        <strong>
-                          {
-                            activity.activityId
-                          }
-                        </strong>
-
-                        <div
-                          style={{
-                            marginTop:
-                              "4px",
-                            color:
-                              "#6b7280",
-                          }}
-                        >
-                          {
-                            activity.activityDescription
-                          }
-                        </div>
-                      </td>
-
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        {
-                          activity.discipline
-                        }
-                      </td>
-
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        {
-                          activity.plannedStart
-                        }
-                        {" → "}
-                        {
-                          activity.plannedEnd
-                        }
-                      </td>
-
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        {activity.actualStart
-                          ? `${activity.actualStart}${
-                              activity.actualEnd
-                                ? ` → ${activity.actualEnd}`
-                                : ""
-                            }`
-                          : "—"}
-                      </td>
-
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        <StatusBadge
-                          status={
-                            activity.currentStatus
-                          }
-                        />
-                      </td>
-
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        {activity.linkedReportId ? (
-                          <span
-                            style={{
-                              padding:
-                                "5px 8px",
-                              borderRadius:
-                                "6px",
-                              background:
-                                "#dcfce7",
-                              color:
-                                "#166534",
-                              fontSize:
-                                "12px",
-                              fontWeight:
-                                700,
-                            }}
-                          >
-                            AI LINKED
-                          </span>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-
-                      <td
-                        style={
-                          tableCellStyle
-                        }
-                      >
-                        {activity.confidence !==
-                        null
-                          ? `${Math.round(
-                              activity.confidence
-                            )}%`
-                          : "—"}
-                      </td>
-                    </tr>
-                  )
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {filteredSchedule.length ===
-            0 && (
+          {dashboard && (
             <div
               style={{
-                textAlign: "center",
-                padding: "30px",
-                color: "#6b7280",
+                display: "grid",
+                gridTemplateColumns:
+                  "repeat(auto-fit, minmax(170px, 1fr))",
+                gap: "10px",
+                marginTop: "18px",
               }}
             >
-              No schedule activities
-              match the current filters.
+              <SummaryCard
+                title="Total Activities"
+                value={dashboard.totalActivities}
+              />
+
+              <SummaryCard
+                title="Linked / Updated"
+                value={dashboard.linkedActivities}
+              />
+
+              <SummaryCard
+                title="Not Started"
+                value={
+                  dashboard.schedule.filter(
+                    (activity) =>
+                      activity.currentStatus ===
+                      "NOT_STARTED"
+                  ).length
+                }
+              />
+            </div>
+          )}
+
+          {!showScheduleDetails && dashboard && (
+            <div
+              style={{
+                marginTop: "14px",
+                padding: "14px 16px",
+                border: "1px solid #dcfce7",
+                borderRadius: "10px",
+                background: "#f0fdf4",
+              }}
+            >
+              {sortedSchedule[0]?.linkedReportId ? (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 800,
+                        color: "#166534",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.04em",
+                      }}
+                    >
+                      Latest Linked Activity
+                    </div>
+                    <strong
+                      style={{
+                        display: "block",
+                        marginTop: "4px",
+                      }}
+                    >
+                      {sortedSchedule[0].activityId} — {sortedSchedule[0].activityDescription}
+                    </strong>
+                    <span
+                      style={{
+                        color: "#4b5563",
+                        fontSize: "13px",
+                      }}
+                    >
+                      Report {sortedSchedule[0].linkedReportId} · {sortedSchedule[0].currentStatus.replace("_", " ")}
+                    </span>
+                  </div>
+
+                  <span
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "999px",
+                      background: "#dcfce7",
+                      color: "#166534",
+                      fontSize: "12px",
+                      fontWeight: 800,
+                    }}
+                  >
+                    AI LINKED
+                  </span>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    color: "#4b5563",
+                    fontSize: "14px",
+                  }}
+                >
+                  No schedule activity has been approved yet.
+                </div>
+              )}
+            </div>
+          )}
+
+          {showScheduleDetails && (
+            <div style={{ marginTop: "18px" }}>
+              {/* FILTERS */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "2fr 1fr 1fr",
+                  gap: "10px",
+                  marginBottom: "14px",
+                }}
+              >
+                <input
+                  value={scheduleSearch}
+                  onChange={(event) =>
+                    setScheduleSearch(event.target.value)
+                  }
+                  placeholder="Search activity ID or description..."
+                  style={{
+                    padding: "11px 12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: "8px",
+                    outline: "none",
+                  }}
+                />
+
+                <select
+                  value={scheduleDiscipline}
+                  onChange={(event) =>
+                    setScheduleDiscipline(event.target.value)
+                  }
+                  style={{
+                    padding: "11px 12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: "8px",
+                  }}
+                >
+                  <option value="ALL">All Disciplines</option>
+                  <option value="Civil">Civil</option>
+                  <option value="Piping">Piping</option>
+                  <option value="Electrical">Electrical</option>
+                  <option value="Instrumentation">Instrumentation</option>
+                  <option value="Mechanical">Mechanical</option>
+                  <option value="HSE">HSE</option>
+                </select>
+
+                <select
+                  value={scheduleStatus}
+                  onChange={(event) =>
+                    setScheduleStatus(event.target.value)
+                  }
+                  style={{
+                    padding: "11px 12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: "8px",
+                  }}
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="NOT_STARTED">Not Started</option>
+                  <option value="STARTED">Started</option>
+                  <option value="IN_PROGRESS">In Progress</option>
+                  <option value="COMPLETED">Completed</option>
+                </select>
+              </div>
+
+              <div
+                style={{
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "10px",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    maxHeight: "390px",
+                    overflow: "auto",
+                  }}
+                >
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      fontSize: "14px",
+                    }}
+                  >
+                    <thead
+                      style={{
+                        position: "sticky",
+                        top: 0,
+                        background: "#f9fafb",
+                        zIndex: 1,
+                      }}
+                    >
+                      <tr>
+                        <th style={tableHeaderStyle}>Activity</th>
+                        <th style={tableHeaderStyle}>Discipline</th>
+                        <th style={tableHeaderStyle}>Planned</th>
+                        <th style={tableHeaderStyle}>Actual</th>
+                        <th style={tableHeaderStyle}>Status</th>
+                        <th style={tableHeaderStyle}>AI Link</th>
+                        <th style={tableHeaderStyle}>Confidence</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {filteredSchedule.map((activity) => (
+                        <tr
+                          key={activity.activityId}
+                          style={{
+                            background: activity.linkedReportId
+                              ? "#f0fdf4"
+                              : "white",
+                          }}
+                        >
+                          <td style={tableCellStyle}>
+                            <strong>{activity.activityId}</strong>
+                            <div
+                              style={{
+                                marginTop: "4px",
+                                color: "#6b7280",
+                              }}
+                            >
+                              {activity.activityDescription}
+                            </div>
+                          </td>
+
+                          <td style={tableCellStyle}>
+                            {activity.discipline}
+                          </td>
+
+                          <td style={tableCellStyle}>
+                            {activity.plannedStart} → {activity.plannedEnd}
+                          </td>
+
+                          <td style={tableCellStyle}>
+                            {activity.actualStart
+                              ? `${activity.actualStart}${
+                                  activity.actualEnd
+                                    ? ` → ${activity.actualEnd}`
+                                    : ""
+                                }`
+                              : "—"}
+                          </td>
+
+                          <td style={tableCellStyle}>
+                            <StatusBadge status={activity.currentStatus} />
+                          </td>
+
+                          <td style={tableCellStyle}>
+                            {activity.linkedReportId ? (
+                              <span
+                                style={{
+                                  padding: "5px 8px",
+                                  borderRadius: "6px",
+                                  background: "#dcfce7",
+                                  color: "#166534",
+                                  fontSize: "12px",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                {activity.linkedReportId}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+
+                          <td style={tableCellStyle}>
+                            {activity.confidence !== null
+                              ? `${Math.round(activity.confidence)}%`
+                              : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {filteredSchedule.length === 0 && (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "24px",
+                    color: "#6b7280",
+                  }}
+                >
+                  No schedule activities match the current filters.
+                </div>
+              )}
+
+              <div
+                style={{
+                  marginTop: "8px",
+                  fontSize: "12px",
+                  color: "#6b7280",
+                }}
+              >
+                Showing {filteredSchedule.length} of {dashboard?.totalActivities ?? 0} activities · linked activities are prioritized.
+              </div>
             </div>
           )}
         </section>
@@ -2671,78 +2762,90 @@ export default function Home() {
 
                         {/* APPROVE / REJECT */}
 
-                        {index ===
-                          0 &&
-                          result.status !==
-                            "UNMATCHED" && (
-                            <div
-                              style={{
-                                marginTop:
-                                  "14px",
-                                display:
-                                  "flex",
-                                gap: "8px",
-                                flexWrap:
-                                  "wrap",
-                              }}
-                            >
-                              <button
-                                onClick={() =>
-                                  handleScheduleAction(
-                                    "APPROVED",
-                                    result
-                                  )
-                                }
-                                style={{
-                                  border:
-                                    "none",
-                                  borderRadius:
-                                    "8px",
-                                  padding:
-                                    "9px 13px",
-                                  background:
-                                    "#16a34a",
-                                  color:
-                                    "white",
-                                  fontWeight:
-                                    700,
-                                  cursor:
-                                    "pointer",
-                                }}
-                              >
-                                Approve &
-                                Update
-                                Schedule
-                              </button>
+                        {index === 0 &&
+                          result.status !== "UNMATCHED" && (() => {
+                            const alreadyApproved =
+                              dashboard?.schedule.some(
+                                (activity) =>
+                                  activity.activityId ===
+                                    result.activity.activityId &&
+                                  activity.linkedReportId === reportId
+                              ) ?? false;
 
-                              <button
-                                onClick={() =>
-                                  handleScheduleAction(
-                                    "REJECTED",
-                                    result
-                                  )
-                                }
+                            const isPending =
+                              pendingActionKey ===
+                              `${reportId}-${result.activity.activityId}`;
+
+                            return (
+                              <div
                                 style={{
-                                  border:
-                                    "1px solid #d1d5db",
-                                  borderRadius:
-                                    "8px",
-                                  padding:
-                                    "9px 13px",
-                                  background:
-                                    "white",
-                                  color:
-                                    "#374151",
-                                  fontWeight:
-                                    700,
-                                  cursor:
-                                    "pointer",
+                                  marginTop: "14px",
+                                  display: "flex",
+                                  gap: "8px",
+                                  flexWrap: "wrap",
+                                  alignItems: "center",
                                 }}
                               >
-                                Reject Match
-                              </button>
-                            </div>
-                          )}
+                                <button
+                                  disabled={alreadyApproved || isPending}
+                                  onClick={() =>
+                                    handleScheduleAction(
+                                      "APPROVED",
+                                      result
+                                    )
+                                  }
+                                  style={{
+                                    border: "none",
+                                    borderRadius: "8px",
+                                    padding: "9px 13px",
+                                    background:
+                                      alreadyApproved
+                                        ? "#9ca3af"
+                                        : isPending
+                                        ? "#86efac"
+                                        : "#16a34a",
+                                    color: "white",
+                                    fontWeight: 700,
+                                    cursor:
+                                      alreadyApproved || isPending
+                                        ? "not-allowed"
+                                        : "pointer",
+                                  }}
+                                >
+                                  {alreadyApproved
+                                    ? "✓ Already Approved"
+                                    : isPending
+                                    ? "Saving..."
+                                    : "Approve & Update Schedule"}
+                                </button>
+
+                                {!alreadyApproved && (
+                                  <button
+                                    disabled={isPending}
+                                    onClick={() =>
+                                      handleScheduleAction(
+                                        "REJECTED",
+                                        result
+                                      )
+                                    }
+                                    style={{
+                                      border: "1px solid #d1d5db",
+                                      borderRadius: "8px",
+                                      padding: "9px 13px",
+                                      background: "white",
+                                      color: "#374151",
+                                      fontWeight: 700,
+                                      cursor: isPending
+                                        ? "not-allowed"
+                                        : "pointer",
+                                    }}
+                                  >
+                                    Reject Match
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()}
                       </div>
                     )
                   )
@@ -2767,14 +2870,49 @@ export default function Home() {
             marginBottom: "28px",
           }}
         >
-          <h2
+          <div
             style={{
-              marginTop: 0,
-              fontSize: "22px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "12px",
+              flexWrap: "wrap",
+              marginBottom: "14px",
             }}
           >
-            Recent Schedule Decisions
-          </h2>
+            <div>
+              <h2
+                style={{
+                  margin: 0,
+                  fontSize: "22px",
+                }}
+              >
+                Recent Schedule Decisions
+              </h2>
+              <p
+                style={{
+                  margin: "5px 0 0",
+                  color: "#6b7280",
+                  fontSize: "13px",
+                }}
+              >
+                Latest decision per report/activity pair.
+              </p>
+            </div>
+
+            <span
+              style={{
+                padding: "6px 10px",
+                borderRadius: "999px",
+                background: "#f3f4f6",
+                color: "#374151",
+                fontSize: "12px",
+                fontWeight: 700,
+              }}
+            >
+              {uniqueRecentUpdates.length} recent
+            </span>
+          </div>
 
           {uniqueRecentUpdates.length ? (
             <div
