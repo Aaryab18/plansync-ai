@@ -3720,9 +3720,11 @@ export default function Home() {
 
                         {/* APPROVE / REJECT */}
 
-                        {index === 0 &&
-  result.status !== "UNMATCHED" &&
-  (() => {
+                        {/* APPROVE / REJECT */}
+
+{index === 0 &&
+  result.activity &&
+  result.activity.activityId && (() => {
     const approvalKey =
       `${reportId}-${result.activity.activityId}`;
 
@@ -3742,96 +3744,90 @@ export default function Home() {
 
     return (
       <div
-        style={{
-          marginTop: "14px",
-          width: "100%",
-        }}
+        className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
       >
-        {alreadyApproved ? (
-          <div
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              padding: "11px 12px",
-              border: "1px solid #bbf7d0",
-              borderRadius: "9px",
-              background: "#f0fdf4",
-              color: "#166534",
-              fontSize: "12px",
-              fontWeight: 850,
-            }}
-          >
-            ✓ APPROVED · Schedule Updated
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Planner Decision
+            </p>
 
-            <div
-              style={{
-                marginTop: 3,
-                color: "#4b5563",
-                fontSize: "10px",
-                fontWeight: 600,
-              }}
-            >
-              {result.activity.activityId} has been linked to {reportId}
+            <p className="mt-1 text-sm font-medium text-slate-900">
+              {result.status === "PLANNER_REVIEW"
+                ? "Planner approval required"
+                : "High-confidence match"}
+            </p>
+          </div>
+
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-bold ${
+              result.status === "PLANNER_REVIEW"
+                ? "bg-amber-100 text-amber-700"
+                : "bg-emerald-100 text-emerald-700"
+            }`}
+          >
+            {result.status === "PLANNER_REVIEW"
+              ? "PLANNER REVIEW"
+              : "AUTO LINK"}
+          </span>
+        </div>
+
+        {alreadyApproved ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">✓</span>
+
+              <div>
+                <p className="text-sm font-bold text-emerald-800">
+                  APPROVED · Schedule Updated
+                </p>
+
+                <p className="mt-1 text-xs text-emerald-700">
+                  {result.activity.activityId} has been linked to{" "}
+                  {reportId}.
+                </p>
+              </div>
             </div>
           </div>
         ) : (
-          <div
-            style={{
-              display: "flex",
-              gap: "8px",
-              flexWrap: "wrap",
-              alignItems: "center",
-            }}
-          >
-            <button
-              disabled={isPending}
-              onClick={() =>
-                handleScheduleAction(
-                  "APPROVED",
-                  result
-                )
-              }
-              style={{
-                border: "none",
-                borderRadius: "8px",
-                padding: "9px 13px",
-                background: isPending
-                  ? "#86efac"
-                  : "#16a34a",
-                color: "white",
-                fontWeight: 700,
-                cursor: isPending
-                  ? "not-allowed"
-                  : "pointer",
-              }}
-            >
-              {isPending
-                ? "Saving..."
-                : "Approve & Update Schedule"}
-            </button>
+          <div>
+            <p className="mb-4 text-sm text-slate-600">
+              {result.status === "PLANNER_REVIEW"
+                ? "This match has lower confidence and requires planner verification before the schedule is updated."
+                : "This match has sufficient confidence for schedule linking."}
+            </p>
 
-            <button
-              disabled={isPending}
-              onClick={() =>
-                handleScheduleAction(
-                  "REJECTED",
-                  result
-                )
-              }
-              style={{
-                border: "1px solid #d1d5db",
-                borderRadius: "8px",
-                padding: "9px 13px",
-                background: "white",
-                color: "#374151",
-                fontWeight: 700,
-                cursor: isPending
-                  ? "not-allowed"
-                  : "pointer",
-              }}
-            >
-              Reject Match
-            </button>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={() =>
+                  handleScheduleAction(
+                    "APPROVED",
+                    result
+                  )
+                }
+                className="flex-1 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isPending
+                  ? "Saving..."
+                  : "✓ Approve & Update Schedule"}
+              </button>
+
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={() =>
+                  handleScheduleAction(
+                    "REJECTED",
+                    result
+                  )
+                }
+                className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Reject Match
+              </button>
+            </div>
           </div>
         )}
       </div>
