@@ -3723,6 +3723,8 @@ export default function Home() {
                         {/* APPROVE / REJECT */}
 
 {index === 0 &&
+  (result.status === "AUTO_LINK" ||
+    result.status === "PLANNER_REVIEW") &&
   result.activity &&
   result.activity.activityId && (() => {
     const approvalKey =
